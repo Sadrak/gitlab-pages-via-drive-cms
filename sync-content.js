@@ -1,0 +1,773 @@
+#!/usr/bin/env node
+
+/**
+ * Google Drive zu VitePress Content Synchronisation
+ * 
+ * Dieses Skript synchronisiert Inhalte aus Google Drive mit einem VitePress Repository.
+ * Es prüft auf Änderungen, lädt neue Inhalte herunter, transformiert sie mit KI
+ * und erstellt automatisch Merge Requests in GitLab.
+ */
+
+import 'dotenv/config';
+import { google } from 'googleapis';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import simpleGit from 'simple-git';
+import axios from 'axios';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// ES Module Kompatibilität für __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ========================================
+// Konfiguration
+// ========================================
+
+const CONFIG = {
+  driveFolderId: process.env.DRIVE_FOLDER_ID,
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  gitlabToken: process.env.GITLAB_TOKEN,
+  gitlabProjectId: process.env.GITLAB_PROJECT_ID,
+  gitlabApiUrl: process.env.GITLAB_API_URL || 'https://gitlab.com/api/v4',
+  repoPath: process.env.REPO_PATH || process.cwd(),
+  contentPath: process.env.CONTENT_PATH || 'src',
+  assetsPath: process.env.ASSETS_PATH || 'public/assets',
+  logLevel: process.env.LOG_LEVEL || 'info'
+};
+
+// KI System-Prompt für die Content-Transformation
+const AI_SYSTEM_PROMPT = `Du bist ein Redakteur. Wandle diesen Text in sauberes Markdown für VitePress um. Korrigiere Rechtschreibung und Grammatik. Erstelle einen YAML-Frontmatter-Block mit title (aus dem Inhalt) und description. Füge die Bilder an passenden Stellen ein, wenn der Text Platzhalter enthält, oder am Ende. Erstelle auch eine ca. 100 Wörter lange Zusammenfassung als TL;DR Block am Anfang. Nutze gerade auch den Inhalt der aktuellen .md-Datei und versuche Struktur und bestehenden Inhalt nur zu ergänzen durch den neuen Inhalt. Arbeite mit Überschriften und Navigation.`;
+
+// ========================================
+// Logger
+// ========================================
+
+class Logger {
+  static log(level, message, ...args) {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${level.toUpperCase()}]`, message, ...args);
+  }
+
+  static info(message, ...args) {
+    this.log('info', message, ...args);
+  }
+
+  static debug(message, ...args) {
+    if (CONFIG.logLevel === 'debug') {
+      this.log('debug', message, ...args);
+    }
+  }
+
+  static error(message, ...args) {
+    this.log('error', message, ...args);
+  }
+
+  static success(message, ...args) {
+    this.log('success', `✓ ${message}`, ...args);
+  }
+}
+
+// ========================================
+// Google Drive Service
+// ========================================
+
+class DriveService {
+  constructor() {
+    // Für öffentliche Ordner brauchen wir nur einen API Key
+    this.drive = google.drive({ version: 'v3', auth: process.env.GOOGLE_API_KEY || 'NO_KEY_NEEDED' });
+  }
+
+  /**
+   * Liste alle Unterordner im Hauptordner
+   */
+  async listFolders(parentFolderId) {
+    try {
+      Logger.debug(`Liste Ordner in: ${parentFolderId}`);
+      
+      const response = await this.drive.files.list({
+        q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'files(id, name, modifiedTime)',
+        orderBy: 'name'
+      });
+
+      return response.data.files || [];
+    } catch (error) {
+      Logger.error('Fehler beim Auflisten der Ordner:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Liste alle Dateien in einem Ordner
+   */
+  async listFiles(folderId) {
+    try {
+      Logger.debug(`Liste Dateien in Ordner: ${folderId}`);
+      
+      const response = await this.drive.files.list({
+        q: `'${folderId}' in parents and trashed=false`,
+        fields: 'files(id, name, mimeType, modifiedTime)',
+        orderBy: 'modifiedTime desc'
+      });
+
+      return response.data.files || [];
+    } catch (error) {
+      Logger.error('Fehler beim Auflisten der Dateien:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Lade den Inhalt eines Google Docs
+   */
+  async downloadDocContent(fileId) {
+    try {
+      Logger.debug(`Lade Google Doc: ${fileId}`);
+      
+      const response = await this.drive.files.export({
+        fileId: fileId,
+        mimeType: 'text/plain'
+      }, { responseType: 'text' });
+
+      return response.data;
+    } catch (error) {
+      Logger.error(`Fehler beim Download von Doc ${fileId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Lade den Inhalt eines Google Sheets als CSV
+   */
+  async downloadSheetContent(fileId) {
+    try {
+      Logger.debug(`Lade Google Sheet: ${fileId}`);
+      
+      const response = await this.drive.files.export({
+        fileId: fileId,
+        mimeType: 'text/csv'
+      }, { responseType: 'text' });
+
+      return response.data;
+    } catch (error) {
+      Logger.error(`Fehler beim Download von Sheet ${fileId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Lade ein Bild herunter
+   */
+  async downloadImage(fileId) {
+    try {
+      Logger.debug(`Lade Bild: ${fileId}`);
+      
+      const response = await this.drive.files.get({
+        fileId: fileId,
+        alt: 'media'
+      }, { responseType: 'arraybuffer' });
+
+      return Buffer.from(response.data);
+    } catch (error) {
+      Logger.error(`Fehler beim Download von Bild ${fileId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Ermittle das neueste Änderungsdatum aller Dateien in einem Ordner
+   */
+  async getLatestModifiedTime(folderId) {
+    try {
+      const files = await this.listFiles(folderId);
+      
+      if (files.length === 0) {
+        return null;
+      }
+
+      // Finde die neueste Änderung
+      const latestFile = files.reduce((latest, file) => {
+        const fileTime = new Date(file.modifiedTime);
+        const latestTime = new Date(latest.modifiedTime);
+        return fileTime > latestTime ? file : latest;
+      }, files[0]);
+
+      return new Date(latestFile.modifiedTime);
+    } catch (error) {
+      Logger.error('Fehler beim Ermitteln des neuesten Datums:', error.message);
+      throw error;
+    }
+  }
+}
+
+// ========================================
+// Content Processor
+// ========================================
+
+class ContentProcessor {
+  constructor(geminiApiKey) {
+    this.genAI = new GoogleGenerativeAI(geminiApiKey);
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' });
+  }
+
+  /**
+   * Transformiere rohen Text mit KI zu Markdown
+   */
+  async transformToMarkdown(rawContent, existingContent, images) {
+    try {
+      Logger.debug('Starte KI-Transformation...');
+
+      // Erstelle den Prompt mit Kontext
+      const imageList = images.length > 0 
+        ? `\n\nVerfügbare Bilder:\n${images.map(img => `- ${img.name} (Pfad: ${img.path})`).join('\n')}`
+        : '';
+
+      const existingContentInfo = existingContent 
+        ? `\n\nAktueller Inhalt der Datei:\n\`\`\`\n${existingContent}\n\`\`\``
+        : '';
+
+      const fullPrompt = `${AI_SYSTEM_PROMPT}
+
+${existingContentInfo}
+
+Neuer/Zusätzlicher Inhalt:
+\`\`\`
+${rawContent}
+\`\`\`
+${imageList}`;
+
+      const result = await this.model.generateContent(fullPrompt);
+      const response = await result.response;
+      const transformedContent = response.text();
+
+      Logger.success('KI-Transformation abgeschlossen');
+      return transformedContent;
+    } catch (error) {
+      Logger.error('Fehler bei der KI-Transformation:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Erstelle Metadaten-Block für die Markdown-Datei
+   */
+  createMetadataComment(files, timestamp) {
+    const fileList = files.map(f => `${f.name} (${f.id})`).join(', ');
+    return `<!-- 
+SYNC_METADATA:
+last_sync: ${timestamp.toISOString()}
+source_files: ${fileList}
+-->
+
+`;
+  }
+
+  /**
+   * Extrahiere Metadaten aus einer Markdown-Datei
+   */
+  extractMetadata(content) {
+    const metadataRegex = /<!--\s*SYNC_METADATA:\s*last_sync:\s*(.+?)\s*source_files:\s*(.+?)\s*-->/s;
+    const match = content.match(metadataRegex);
+
+    if (match) {
+      return {
+        lastSync: new Date(match[1]),
+        sourceFiles: match[2]
+      };
+    }
+
+    return null;
+  }
+}
+
+// ========================================
+// Git Service
+// ========================================
+
+class GitService {
+  constructor(repoPath) {
+    this.git = simpleGit(repoPath);
+    this.repoPath = repoPath;
+  }
+
+  /**
+   * Erstelle einen neuen Branch
+   */
+  async createBranch(branchName) {
+    try {
+      Logger.debug(`Erstelle Branch: ${branchName}`);
+      
+      // Stelle sicher, dass wir auf main sind und aktuell
+      await this.git.checkout('main');
+      await this.git.pull();
+      
+      // Erstelle neuen Branch
+      await this.git.checkoutLocalBranch(branchName);
+      
+      Logger.success(`Branch ${branchName} erstellt`);
+      return true;
+    } catch (error) {
+      Logger.error('Fehler beim Erstellen des Branches:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Committe Änderungen
+   */
+  async commitChanges(message) {
+    try {
+      Logger.debug('Füge Änderungen hinzu...');
+      await this.git.add('.');
+      
+      const status = await this.git.status();
+      
+      if (status.files.length === 0) {
+        Logger.info('Keine Änderungen zum Committen');
+        return false;
+      }
+
+      Logger.debug(`Committe ${status.files.length} Dateien...`);
+      await this.git.commit(message);
+      
+      Logger.success('Änderungen committed');
+      return true;
+    } catch (error) {
+      Logger.error('Fehler beim Committen:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Pushe Branch zum Remote
+   */
+  async pushBranch(branchName) {
+    try {
+      Logger.debug(`Pushe Branch: ${branchName}`);
+      await this.git.push('origin', branchName, ['--set-upstream']);
+      Logger.success(`Branch ${branchName} gepusht`);
+      return true;
+    } catch (error) {
+      Logger.error('Fehler beim Pushen:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Gehe zurück zum main Branch
+   */
+  async returnToMain() {
+    try {
+      await this.git.checkout('main');
+      Logger.debug('Zurück auf main Branch');
+    } catch (error) {
+      Logger.error('Fehler beim Wechsel zu main:', error.message);
+    }
+  }
+}
+
+// ========================================
+// GitLab Service
+// ========================================
+
+class GitLabService {
+  constructor(apiUrl, token, projectId) {
+    this.apiUrl = apiUrl;
+    this.token = token;
+    this.projectId = projectId;
+    this.client = axios.create({
+      baseURL: apiUrl,
+      headers: {
+        'PRIVATE-TOKEN': token
+      }
+    });
+  }
+
+  /**
+   * Erstelle einen Merge Request
+   */
+  async createMergeRequest(sourceBranch, title, description) {
+    try {
+      Logger.debug('Erstelle Merge Request...');
+
+      const response = await this.client.post(`/projects/${this.projectId}/merge_requests`, {
+        source_branch: sourceBranch,
+        target_branch: 'main',
+        title: title,
+        description: description,
+        labels: ['Content-Update'],
+        draft: true
+      });
+
+      Logger.success(`Merge Request erstellt: ${response.data.web_url}`);
+      return response.data;
+    } catch (error) {
+      Logger.error('Fehler beim Erstellen des Merge Requests:', error.message);
+      if (error.response) {
+        Logger.error('GitLab Antwort:', error.response.data);
+      }
+      throw error;
+    }
+  }
+}
+
+// ========================================
+// Content Synchronizer (Hauptlogik)
+// ========================================
+
+class ContentSynchronizer {
+  constructor(config) {
+    this.config = config;
+    this.driveService = new DriveService();
+    this.contentProcessor = new ContentProcessor(config.geminiApiKey);
+    this.gitService = new GitService(config.repoPath);
+    this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
+    this.changesDetected = false;
+    this.processedFolders = [];
+  }
+
+  /**
+   * Hauptmethode: Synchronisation starten
+   */
+  async sync() {
+    try {
+      Logger.info('===========================================');
+      Logger.info('Starte Content Synchronisation');
+      Logger.info('===========================================');
+
+      // Validiere Konfiguration
+      this.validateConfig();
+
+      // Hole alle Unterordner aus Google Drive
+      Logger.info(`Lade Ordner aus Google Drive (ID: ${this.config.driveFolderId})...`);
+      const folders = await this.driveService.listFolders(this.config.driveFolderId);
+      Logger.info(`${folders.length} Ordner gefunden`);
+
+      // Verarbeite jeden Ordner
+      for (const folder of folders) {
+        await this.processFolder(folder);
+      }
+
+      // Wenn Änderungen erkannt wurden, erstelle einen Merge Request
+      if (this.changesDetected) {
+        await this.createMergeRequest();
+      } else {
+        Logger.info('Keine Änderungen erkannt. Kein Merge Request erstellt.');
+      }
+
+      Logger.info('===========================================');
+      Logger.success('Synchronisation abgeschlossen');
+      Logger.info('===========================================');
+
+    } catch (error) {
+      Logger.error('Fehler bei der Synchronisation:', error.message);
+      
+      // Versuche zum main Branch zurückzukehren
+      try {
+        await this.gitService.returnToMain();
+      } catch (e) {
+        // Ignoriere Fehler beim Zurückkehren
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Validiere die Konfiguration
+   */
+  validateConfig() {
+    const required = ['driveFolderId', 'geminiApiKey', 'gitlabToken', 'gitlabProjectId'];
+    const missing = required.filter(key => !this.config[key]);
+
+    if (missing.length > 0) {
+      throw new Error(`Fehlende Konfiguration: ${missing.join(', ')}`);
+    }
+  }
+
+  /**
+   * Verarbeite einen einzelnen Ordner
+   */
+  async processFolder(folder) {
+    try {
+      Logger.info(`\n--- Verarbeite Ordner: ${folder.name} ---`);
+
+      // Pfade definieren
+      const folderSlug = this.sanitizeFolderName(folder.name);
+      const contentDir = path.join(this.config.repoPath, this.config.contentPath, folderSlug);
+      const assetsDir = path.join(this.config.repoPath, this.config.assetsPath, folderSlug);
+      const mdFilePath = path.join(contentDir, 'index.md');
+
+      // Prüfe, ob Ordner aktualisiert werden muss
+      const needsUpdate = await this.checkIfUpdateNeeded(folder, mdFilePath);
+
+      if (!needsUpdate) {
+        Logger.info(`✓ Ordner "${folder.name}" ist aktuell. Überspringe.`);
+        return;
+      }
+
+      Logger.info(`→ Ordner "${folder.name}" hat Änderungen. Starte Verarbeitung...`);
+
+      // Lade alle Dateien aus dem Ordner
+      const files = await this.driveService.listFiles(folder.id);
+      Logger.info(`  ${files.length} Dateien gefunden`);
+
+      // Erstelle Verzeichnisse falls nötig
+      await fs.mkdir(contentDir, { recursive: true });
+      await fs.mkdir(assetsDir, { recursive: true });
+
+      // Verarbeite Inhalte
+      const { textContent, images } = await this.processFiles(files, assetsDir, folderSlug);
+
+      // Lade existierenden Inhalt falls vorhanden
+      let existingContent = null;
+      try {
+        existingContent = await fs.readFile(mdFilePath, 'utf-8');
+        // Entferne alte Metadaten für die KI
+        existingContent = existingContent.replace(/<!--\s*SYNC_METADATA:.*?-->/s, '').trim();
+      } catch (error) {
+        Logger.debug('Keine existierende Datei gefunden (neu)');
+      }
+
+      // Transformiere mit KI
+      Logger.info('  Transformiere Inhalt mit KI...');
+      const transformedContent = await this.contentProcessor.transformToMarkdown(
+        textContent,
+        existingContent,
+        images
+      );
+
+      // Füge Metadaten hinzu
+      const metadata = this.contentProcessor.createMetadataComment(files, new Date());
+      const finalContent = metadata + transformedContent;
+
+      // Speichere die Datei
+      await fs.writeFile(mdFilePath, finalContent, 'utf-8');
+      Logger.success(`  Datei gespeichert: ${mdFilePath}`);
+
+      // Markiere, dass Änderungen vorliegen
+      this.changesDetected = true;
+      this.processedFolders.push(folder.name);
+
+    } catch (error) {
+      Logger.error(`Fehler beim Verarbeiten von Ordner "${folder.name}":`, error.message);
+      // Fahre mit dem nächsten Ordner fort
+    }
+  }
+
+  /**
+   * Prüfe, ob ein Ordner aktualisiert werden muss
+   */
+  async checkIfUpdateNeeded(folder, mdFilePath) {
+    try {
+      // Prüfe, ob die lokale Datei existiert
+      let localModifiedTime = null;
+      let localMetadata = null;
+
+      try {
+        const stats = await fs.stat(mdFilePath);
+        localModifiedTime = stats.mtime;
+
+        // Lese Metadaten aus der Datei
+        const content = await fs.readFile(mdFilePath, 'utf-8');
+        localMetadata = this.contentProcessor.extractMetadata(content);
+      } catch (error) {
+        // Datei existiert nicht - Update nötig
+        Logger.debug('Lokale Datei existiert nicht');
+        return true;
+      }
+
+      // Hole das neueste Änderungsdatum aus Drive
+      const driveModifiedTime = await this.driveService.getLatestModifiedTime(folder.id);
+
+      if (!driveModifiedTime) {
+        Logger.debug('Keine Dateien in Drive Ordner');
+        return false;
+      }
+
+      // Vergleiche Zeitstempel
+      if (localMetadata && localMetadata.lastSync) {
+        const lastSync = localMetadata.lastSync;
+        Logger.debug(`Letzter Sync: ${lastSync.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
+        return driveModifiedTime > lastSync;
+      }
+
+      // Fallback: Vergleiche mit Datei-Timestamp
+      Logger.debug(`Lokale Änderung: ${localModifiedTime.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
+      return driveModifiedTime > localModifiedTime;
+
+    } catch (error) {
+      Logger.error('Fehler beim Prüfen der Aktualität:', error.message);
+      // Im Fehlerfall aktualisieren
+      return true;
+    }
+  }
+
+  /**
+   * Verarbeite alle Dateien in einem Ordner
+   */
+  async processFiles(files, assetsDir, folderSlug) {
+    let textContent = '';
+    const images = [];
+
+    for (const file of files) {
+      try {
+        Logger.debug(`  Verarbeite: ${file.name} (${file.mimeType})`);
+
+        // Google Docs
+        if (file.mimeType === 'application/vnd.google-apps.document') {
+          const content = await this.driveService.downloadDocContent(file.id);
+          textContent += `\n\n## ${file.name}\n\n${content}`;
+        }
+        
+        // Google Sheets
+        else if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+          const content = await this.driveService.downloadSheetContent(file.id);
+          textContent += `\n\n## ${file.name}\n\n\`\`\`csv\n${content}\n\`\`\``;
+        }
+        
+        // Bilder
+        else if (file.mimeType.startsWith('image/')) {
+          const imageBuffer = await this.driveService.downloadImage(file.id);
+          const ext = this.getImageExtension(file.mimeType);
+          const imageName = this.sanitizeFileName(file.name);
+          const imagePath = path.join(assetsDir, `${imageName}${ext}`);
+          
+          await fs.writeFile(imagePath, imageBuffer);
+          
+          const relativeImagePath = `/assets/${folderSlug}/${imageName}${ext}`;
+          images.push({
+            name: file.name,
+            path: relativeImagePath
+          });
+          
+          Logger.debug(`    Bild gespeichert: ${imagePath}`);
+        }
+
+      } catch (error) {
+        Logger.error(`  Fehler beim Verarbeiten von "${file.name}":`, error.message);
+      }
+    }
+
+    return { textContent, images };
+  }
+
+  /**
+   * Erstelle einen Merge Request mit allen Änderungen
+   */
+  async createMergeRequest() {
+    try {
+      const timestamp = Date.now();
+      const branchName = `content-update-${timestamp}`;
+
+      Logger.info('\n--- Erstelle Git Merge Request ---');
+
+      // Erstelle Branch
+      await this.gitService.createBranch(branchName);
+
+      // Committe Änderungen
+      const commitMessage = `Content Update: ${this.processedFolders.join(', ')}
+
+Automatisch synchronisiert von Google Drive
+Bearbeitete Ordner: ${this.processedFolders.length}
+Timestamp: ${new Date().toISOString()}`;
+
+      const hasChanges = await this.gitService.commitChanges(commitMessage);
+
+      if (!hasChanges) {
+        Logger.info('Keine Git-Änderungen zum Pushen');
+        await this.gitService.returnToMain();
+        return;
+      }
+
+      // Pushe Branch
+      await this.gitService.pushBranch(branchName);
+
+      // Erstelle Merge Request
+      const mrTitle = `🤖 Content Update vom ${new Date().toLocaleDateString('de-DE')}`;
+      const mrDescription = `## Automatisches Content Update
+
+Dieser Merge Request wurde automatisch erstellt durch das Content-Synchronisations-Skript.
+
+### Geänderte Bereiche
+${this.processedFolders.map(f => `- ${f}`).join('\n')}
+
+### Details
+- **Branch:** \`${branchName}\`
+- **Zeitstempel:** ${new Date().toISOString()}
+- **Anzahl Ordner:** ${this.processedFolders.length}
+
+---
+*Generiert von sync-content.js*`;
+
+      await this.gitlabService.createMergeRequest(branchName, mrTitle, mrDescription);
+
+      // Zurück zu main
+      await this.gitService.returnToMain();
+
+      Logger.success('\n✓ Merge Request erfolgreich erstellt!');
+
+    } catch (error) {
+      Logger.error('Fehler beim Erstellen des Merge Requests:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Hilfsfunktion: Bereinige Ordnernamen für URLs
+   */
+  sanitizeFolderName(name) {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+  }
+
+  /**
+   * Hilfsfunktion: Bereinige Dateinamen
+   */
+  sanitizeFileName(name) {
+    return name
+      .replace(/[^a-zA-Z0-9.-]/g, '_')
+      .replace(/\s+/g, '_');
+  }
+
+  /**
+   * Hilfsfunktion: Ermittle Dateiendung für Bild
+   */
+  getImageExtension(mimeType) {
+    const extensions = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'image/svg+xml': '.svg'
+    };
+    return extensions[mimeType] || '.jpg';
+  }
+}
+
+// ========================================
+// Hauptprogramm
+// ========================================
+
+async function main() {
+  try {
+    // Erstelle Synchronizer-Instanz
+    const synchronizer = new ContentSynchronizer(CONFIG);
+
+    // Starte Synchronisation
+    await synchronizer.sync();
+
+    process.exit(0);
+  } catch (error) {
+    Logger.error('\n❌ Synchronisation fehlgeschlagen:', error.message);
+    Logger.debug(error.stack);
+    process.exit(1);
+  }
+}
+
+// Starte das Skript
+main();
