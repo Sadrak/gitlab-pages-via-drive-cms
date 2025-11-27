@@ -346,8 +346,8 @@ async function prepareGitBranch() {
     return { git, branchName: null, hasChanges: false };
   }
   
-  // Neuen Branch erstellen
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  // Neuen Branch erstellen (Git-kompatibles Format: lowercase, keine Doppelpunkte)
+  const timestamp = new Date().toISOString().replace(/[:.T]/g, '-').toLowerCase().slice(0, 19);
   const branchName = `content-update-${timestamp}`;
   
   await git.checkoutLocalBranch(branchName);
@@ -361,7 +361,8 @@ async function prepareGitBranch() {
  * @param {string} message - Commit-Nachricht
  */
 async function commitAndPush(git, message) {
-  await git.add('.');
+  // Nur die relevanten VitePress-Verzeichnisse hinzufügen
+  await git.add([CONFIG.vitepressSrcPath, CONFIG.vitepressAssetsPath]);
   await git.commit(message);
   await git.push('origin', 'HEAD');
 }
