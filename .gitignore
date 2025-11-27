@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Build output
+dist/
+.vitepress/cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp files
+tmp/
+temp/

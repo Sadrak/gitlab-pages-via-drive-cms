@@ -1,0 +1,27 @@
+{
+  "name": "gitlab-pages-via-drive-cms",
+  "version": "1.0.0",
+  "description": "Verwaltung einer gitlab pages Webseite mittels google drive als CMS",
+  "type": "module",
+  "main": "sync-content.js",
+  "scripts": {
+    "sync": "node sync-content.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "gitlab",
+    "google-drive",
+    "vitepress",
+    "cms",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "googleapis": "^144.0.0",
+    "simple-git": "^3.27.0"
+  }
+}
