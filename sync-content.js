@@ -480,11 +480,18 @@ class ContentSynchronizer {
    * Validiere die Konfiguration
    */
   validateConfig() {
-    const required = ['driveFolderId', 'geminiApiKey', 'gitlabToken', 'gitlabProjectId'];
-    const missing = required.filter(key => !this.config[key]);
+    const required = {
+      driveFolderId: 'DRIVE_FOLDER_ID',
+      geminiApiKey: 'GEMINI_API_KEY',
+      gitlabToken: 'GITLAB_TOKEN oder CI_JOB_TOKEN',
+      gitlabProjectId: 'GITLAB_PROJECT_ID oder CI_PROJECT_ID'
+    };
+    
+    const missing = Object.keys(required).filter(key => !this.config[key]);
 
     if (missing.length > 0) {
-      throw new Error(`Fehlende Konfiguration: ${missing.join(', ')}`);
+      const missingVars = missing.map(key => required[key]);
+      throw new Error(`Fehlende Umgebungsvariablen: ${missingVars.join(', ')}`);
     }
   }
 
