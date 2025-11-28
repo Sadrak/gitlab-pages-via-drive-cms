@@ -28,10 +28,11 @@ const __dirname = path.dirname(__filename);
 const CONFIG = {
   driveFolderId: process.env.DRIVE_FOLDER_ID,
   geminiApiKey: process.env.GEMINI_API_KEY,
-  gitlabToken: process.env.GITLAB_TOKEN,
-  gitlabProjectId: process.env.GITLAB_PROJECT_ID,
-  gitlabApiUrl: process.env.GITLAB_API_URL || 'https://gitlab.com/api/v4',
-  repoPath: process.env.REPO_PATH || process.cwd(),
+  gitlabToken: process.env.CI_JOB_TOKEN || process.env.GITLAB_TOKEN,
+  // Automatisch aus CI/CD laden, falls verfügbar
+  gitlabProjectId: process.env.GITLAB_PROJECT_ID || process.env.CI_PROJECT_ID,
+  gitlabApiUrl: process.env.GITLAB_API_URL || process.env.CI_API_V4_URL || 'https://gitlab.com/api/v4',
+  repoPath: process.env.REPO_PATH || process.env.CI_PROJECT_DIR || process.cwd(),
   contentPath: process.env.CONTENT_PATH || 'docs',
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
   logLevel: process.env.LOG_LEVEL || 'info'
@@ -520,7 +521,7 @@ class ContentSynchronizer {
       await fs.mkdir(assetsDir, { recursive: true });
 
       // Verarbeite Inhalte
-      const { textContent, images } = await this.processFiles(files, assetsDir, fileSlug);
+      const { textContent, images } = await this.processFiles(files, assetsDir, folderFileSlug);
 
       // Lade existierenden Inhalt falls vorhanden
       let existingContent = null;
