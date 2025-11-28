@@ -505,8 +505,8 @@ class ContentSynchronizer {
       // Pfade definieren
       const folderFileSlug = this.sanitizeFolderName(folder.name);
       const mdFilePath = path.join(this.config.repoPath, this.config.contentPath, folderFileSlug) + '.md';
-      // Assets unter docs/assets/{folderSlug} speichern
-      const assetsDir = path.join(this.config.repoPath, this.config.contentPath, 'assets', folderSlug);
+      // Assets unter docs/assets/{folderFileSlug} speichern
+      const assetsDir = path.join(this.config.repoPath, this.config.contentPath, 'assets', folderFileSlug);
       const contentDir = path.dirname(mdFilePath);
 
       // Prüfe, ob Ordner aktualisiert werden muss
@@ -571,20 +571,21 @@ class ContentSynchronizer {
    */
   async checkIfUpdateNeeded(folder, mdFilePath) {
     try {
-      // Prüfe, ob die lokale Datei existiert
-      let localModifiedTime = null;
+      // Versuche Metadaten aus der lokalen Datei zu lesen
       let localMetadata = null;
 
       try {
-        const stats = await fs.stat(mdFilePath);
-        localModifiedTime = stats.mtime;
-
-        // Lese Metadaten aus der Datei
         const content = await fs.readFile(mdFilePath, 'utf-8');
         localMetadata = this.contentProcessor.extractMetadata(content);
       } catch (error) {
         // Datei existiert nicht - Update nötig
-        Logger.debug('Lokale Datei existiert nicht');
+        Logger.debug('Lokale Datei existiert nicht - Update erforderlich');
+        return true;
+      }
+
+      // Wenn keine Metadaten vorhanden sind, muss synchronisiert werden
+      if (!localMetadata || !localMetadata.lastSync) {
+        Logger.debug('Keine Sync-Metadaten gefunden - Update erforderlich');
         return true;
       }
 
@@ -596,16 +597,11 @@ class ContentSynchronizer {
         return false;
       }
 
-      // Vergleiche Zeitstempel
-      if (localMetadata && localMetadata.lastSync) {
-        const lastSync = localMetadata.lastSync;
-        Logger.debug(`Letzter Sync: ${lastSync.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
-        return driveModifiedTime > lastSync;
-      }
-
-      // Fallback: Vergleiche mit Datei-Timestamp
-      Logger.debug(`Lokale Änderung: ${localModifiedTime.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
-      return driveModifiedTime > localModifiedTime;
+      // Vergleiche Zeitstempel aus Metadaten mit Drive
+      const lastSync = localMetadata.lastSync;
+      Logger.debug(`Letzter Sync: ${lastSync.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
+      
+      return driveModifiedTime > lastSync;
 
     } catch (error) {
       Logger.error('Fehler beim Prüfen der Aktualität:', error.message);
