@@ -27,7 +27,7 @@ const __dirname = path.dirname(__filename);
 
 const CONFIG = {
   driveFolderId: process.env.DRIVE_FOLDER_ID,
-  geminiApiKey: process.env.GEMINI_API_KEY,
+  googleApiKey: process.env.GOOGLE_API_KEY,
   gitlabToken: process.env.CI_JOB_TOKEN || process.env.GITLAB_TOKEN,
   // Automatisch aus CI/CD laden, falls verfügbar
   gitlabProjectId: process.env.GITLAB_PROJECT_ID || process.env.CI_PROJECT_ID,
@@ -75,9 +75,9 @@ class Logger {
 // ========================================
 
 class DriveService {
-  constructor() {
+  constructor(googleApiKey) {
     // Für öffentliche Ordner brauchen wir nur einen API Key
-    this.drive = google.drive({ version: 'v3', auth: process.env.GOOGLE_API_KEY || 'NO_KEY_NEEDED' });
+    this.drive = google.drive({ version: 'v3', auth: googleApiKey });
   }
 
   /**
@@ -208,8 +208,8 @@ class DriveService {
 // ========================================
 
 class ContentProcessor {
-  constructor(geminiApiKey) {
-    this.genAI = new GoogleGenerativeAI(geminiApiKey);
+  constructor(googleApiKey) {
+    this.genAI = new GoogleGenerativeAI(googleApiKey);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' });
   }
 
@@ -421,8 +421,8 @@ class GitLabService {
 class ContentSynchronizer {
   constructor(config) {
     this.config = config;
-    this.driveService = new DriveService();
-    this.contentProcessor = new ContentProcessor(config.geminiApiKey);
+    this.driveService = new DriveService(config.googleApiKey);
+    this.contentProcessor = new ContentProcessor(config.googleApiKey);
     this.gitService = new GitService(config.repoPath);
     this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
     this.changesDetected = false;
@@ -482,7 +482,7 @@ class ContentSynchronizer {
   validateConfig() {
     const required = {
       driveFolderId: 'DRIVE_FOLDER_ID',
-      geminiApiKey: 'GEMINI_API_KEY',
+      googleApiKey: 'GOOGLE_API_KEY',
       gitlabToken: 'GITLAB_TOKEN oder CI_JOB_TOKEN',
       gitlabProjectId: 'GITLAB_PROJECT_ID oder CI_PROJECT_ID'
     };
