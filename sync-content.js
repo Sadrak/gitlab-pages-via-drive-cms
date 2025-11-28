@@ -32,7 +32,7 @@ const CONFIG = {
   gitlabProjectId: process.env.GITLAB_PROJECT_ID,
   gitlabApiUrl: process.env.GITLAB_API_URL || 'https://gitlab.com/api/v4',
   repoPath: process.env.REPO_PATH || process.cwd(),
-  contentPath: process.env.CONTENT_PATH || 'src',
+  contentPath: process.env.CONTENT_PATH || 'docs',
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
   logLevel: process.env.LOG_LEVEL || 'info'
 };
@@ -495,10 +495,11 @@ class ContentSynchronizer {
       Logger.info(`\n--- Verarbeite Ordner: ${folder.name} ---`);
 
       // Pfade definieren
-      const folderSlug = this.sanitizeFolderName(folder.name);
-      const contentDir = path.join(this.config.repoPath, this.config.contentPath, folderSlug);
-      const assetsDir = path.join(this.config.repoPath, this.config.assetsPath, folderSlug);
-      const mdFilePath = path.join(contentDir, 'index.md');
+      const folderFileSlug = this.sanitizeFolderName(folder.name);
+      const mdFilePath = path.join(this.config.repoPath, this.config.contentPath, folderFileSlug) + '.md';
+      // Assets unter docs/assets/{folderSlug} speichern
+      const assetsDir = path.join(this.config.repoPath, this.config.contentPath, 'assets', folderSlug);
+      const contentDir = path.dirname(mdFilePath);
 
       // Prüfe, ob Ordner aktualisiert werden muss
       const needsUpdate = await this.checkIfUpdateNeeded(folder, mdFilePath);
@@ -519,7 +520,7 @@ class ContentSynchronizer {
       await fs.mkdir(assetsDir, { recursive: true });
 
       // Verarbeite Inhalte
-      const { textContent, images } = await this.processFiles(files, assetsDir, folderSlug);
+      const { textContent, images } = await this.processFiles(files, assetsDir, fileSlug);
 
       // Lade existierenden Inhalt falls vorhanden
       let existingContent = null;
@@ -608,7 +609,7 @@ class ContentSynchronizer {
   /**
    * Verarbeite alle Dateien in einem Ordner
    */
-  async processFiles(files, assetsDir, folderSlug) {
+  async processFiles(files, assetsDir, fileSlug) {
     let textContent = '';
     const images = [];
 
@@ -637,7 +638,8 @@ class ContentSynchronizer {
           
           await fs.writeFile(imagePath, imageBuffer);
           
-          const relativeImagePath = `/assets/${folderSlug}/${imageName}${ext}`;
+          // Pfad vom Markdown (docs/{fileSlug}.md) zum Bild (/assets/{fileSlug}/)
+          const relativeImagePath = `/assets/${fileSlug}/${imageName}${ext}`;
           images.push({
             name: file.name,
             path: relativeImagePath
@@ -721,7 +723,7 @@ ${this.processedFolders.map(f => `- ${f}`).join('\n')}
   sanitizeFolderName(name) {
     return name
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^a-zA-Z0-9\/]+/g, '-')
       .replace(/^-|-$/g, '');
   }
 
