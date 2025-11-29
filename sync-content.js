@@ -350,9 +350,53 @@ source_files: ${fileList}
 // ========================================
 
 class GitService {
-  constructor(repoPath) {
-    this.git = simpleGit(repoPath);
-    this.repoPath = repoPath;
+  constructor(repoPath, gitlabToken) {
+    this.git = simpleGit(repoPath, { config: [`Authorization: token ${gitlabToken}`]});
+  }
+
+  /**
+   * Konfiguriere Git mit GitLab Token für Authentifizierung
+   */
+  async configureAuth(gitlabToken) {
+    try {
+      if (!gitlabToken) {
+        Logger.debug('Kein GitLab Token vorhanden - überspringe Auth-Konfiguration');
+        return;
+      }
+
+      // Hole die aktuelle Remote-URL
+      const remotes = await this.git.getRemotes(true);
+      const origin = remotes.find(r => r.name === 'origin');
+      
+      if (!origin) {
+        Logger.error('Kein "origin" Remote gefunden');
+        return;
+      }
+
+      // Extrahiere GitLab-URL und Projekt-Pfad
+      // Format: https://gitlab.com/username/project.git oder git@gitlab.com:username/project.git
+      let url = origin.refs.fetch;
+      
+      // Konvertiere SSH zu HTTPS falls nötig
+      if (url.startsWith('git@')) {
+        url = url.replace(/^git@([^:]+):/, 'https://$1/');
+      }
+      
+      // Füge Token zur URL hinzu
+      const urlWithToken = url.replace(
+        /^https:\/\/([^\/]+)\//,
+        `https://oauth2:${gitlabToken}@$1/`
+      );
+      
+      // Setze die neue Remote-URL (nur für diesen Vorgang)
+      await this.git.removeRemote('origin');
+      await this.git.addRemote('origin', urlWithToken);
+      
+      Logger.debug('Git-Authentifizierung konfiguriert');
+    } catch (error) {
+      Logger.error('Fehler bei der Git-Auth-Konfiguration:', error.message);
+      throw error;
+    }
   }
 
   /**
@@ -485,7 +529,7 @@ class ContentSynchronizer {
     this.config = config;
     this.driveService = new DriveService(config.googleApiKey);
     this.contentProcessor = new ContentProcessor(config.googleApiKey, config.geminiModel, config.geminiSystemPrompt);
-    this.gitService = new GitService(config.repoPath);
+    this.gitService = new GitService(config.repoPath, config.gitlabToken);
     this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
     this.changesDetected = false;
     this.processedFolders = [];
@@ -793,7 +837,7 @@ class ContentSynchronizer {
   async createMergeRequest() {
     try {
       const timestamp = Date.now();
-      const branchName = `content-update-${timestamp}`;
+      const branchName = `content-update-${new Date(timestamp).toISOString().replace(/[:.]/g, '-')}`;
 
       Logger.info('\n--- Erstelle Git Merge Request ---');
 
@@ -805,7 +849,7 @@ class ContentSynchronizer {
 
 Automatisch synchronisiert von Google Drive
 Bearbeitete Ordner: ${this.processedFolders.length}
-Timestamp: ${new Date().toISOString()}`;
+Timestamp: ${new Date(timestamp).toISOString()}`;
 
       const hasChanges = await this.gitService.commitChanges(commitMessage);
 
