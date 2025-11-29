@@ -274,7 +274,7 @@ class ContentProcessor {
         ? `\n\nAktueller Inhalt der Datei:\n\`\`\`\n${existingContent}\n\`\`\``
         : '';
 
-
+      const fullPrompt = `${this.geminiSystemPrompt}
 ${existingContentInfo}
 
 Neuer/Zusätzlicher Inhalt:
