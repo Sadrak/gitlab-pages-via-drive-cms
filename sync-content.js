@@ -46,9 +46,6 @@ Format:
 - Bilder mit beschreibenden Alt-Texten
 - Füge die Bilder an passenden Stellen ein, wenn der Text Platzhalter enthält, oder am Ende
 
-Metadaten:
-- Füge nach dem Frontmatter die SYNC_METADATA ein
-
 Inhalt:
 - Nutze den bereitgestellten Text und ergänze ihn sinnvoll
 - Entferne veraltete oder unbestätigte Informationen
