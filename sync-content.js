@@ -388,25 +388,28 @@ class GitService {
         return;
       }
 
-      // Extrahiere GitLab-URL und Projekt-Pfad
-      // Format: https://gitlab.com/username/project.git oder git@gitlab.com:username/project.git
       let url = origin.refs.fetch;
-      
-      // Entferne existierende Auth-Tokens aus der URL (falls bereits vorhanden)
-      url = url.replace(/^https:\/\/[^@]+@/, 'https://');
+      Logger.debug(`Original URL: ${url}`);
       
       // Konvertiere SSH zu HTTPS falls nötig
       if (url.startsWith('git@')) {
-        url = url.replace(/^git@([^:]+):/, 'https://$1/');
+        url = url.replace(/^git@([^:]+):(.+)$/, 'https://$1/$2');
       }
       
-      // Füge Token zur URL hinzu
-      const urlWithToken = url.replace(
-        /^https:\/\//,
-        `https://oauth2:${gitlabToken}@`
-      );
+      // Extrahiere saubere URL ohne jegliche Authentifizierung
+      // Matche: https://[optional auth@]hostname/path
+      const match = url.match(/^https:\/\/(?:[^@]+@)?([^\/]+\/.+)$/);
       
-      Logger.debug(`Remote-URL konfiguriert: ${url.replace(/\/\/.*@/, '//***@')}`);
+      if (!match) {
+        Logger.error(`Ungültiges URL-Format: ${url}`);
+        return;
+      }
+      
+      // Baue saubere URL mit Token neu auf
+      const cleanPath = match[1]; // z.B. "gitlab.com/username/project.git"
+      const urlWithToken = `https://oauth2:${gitlabToken}@${cleanPath}`;
+      
+      Logger.debug(`Neue URL: https://***@${cleanPath}`);
       
       // Setze die neue Remote-URL (nur für diesen Vorgang)
       await this.git.removeRemote('origin');
