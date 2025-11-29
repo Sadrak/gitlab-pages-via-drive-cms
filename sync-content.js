@@ -16,6 +16,7 @@ import axios from 'axios';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { throws } from 'assert';
 
 // ES Module Kompatibilität für __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -25,9 +26,42 @@ const __dirname = path.dirname(__filename);
 // Konfiguration
 // ========================================
 
+
+// KI System-Prompt für die Content-Transformation
+const DEFAULT_SYSTEM_PROMPT = `
+Du bist ein Redakteur. Wandle Texte in sauberes Markdown für VitePress um.
+
+Stil-Richtlinien:
+- Verwende aktive Sprache und Du-Form
+- Gliedere in: Übersicht, Details, Beispiele, Troubleshooting
+- Nutze Emojis sparsam (nur für wichtige Hinweise)
+
+Format:
+- Erstelle YAML Frontmatter mit: title, description, tags
+- Gib KEINE Erklärungen zum Prozess aus
+- Nutze Markdown Syntax korrekt
+- Schreibe Markdown OHNE einen Markdown-Block
+- TL;DR Block am Anfang (max 100 Wörter)
+- Verwende # für Hauptüberschriften, ## für Unterüberschriften
+- Bilder mit beschreibenden Alt-Texten
+- Füge die Bilder an passenden Stellen ein, wenn der Text Platzhalter enthält, oder am Ende
+
+Metadaten:
+- Füge nach dem Frontmatter die SYNC_METADATA ein
+
+Inhalt:
+- Nutze den bereitgestellten Text und ergänze ihn sinnvoll
+- Entferne veraltete oder unbestätigte Informationen
+- Achte auf Konsistenz in Terminologie und Stil
+- Versuche möglichst, den bestehenden Inhalt zu erweitern ohne unnötige Anpassungen
+- Korrigiere Rechtschreibfehler und Grammatikfehler
+`;
+
 const CONFIG = {
   driveFolderId: process.env.DRIVE_FOLDER_ID,
   googleApiKey: process.env.GOOGLE_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-pro-preview',
+  geminiSystemPrompt: process.env.GEMINI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
   gitlabToken: process.env.CI_JOB_TOKEN || process.env.GITLAB_TOKEN,
   // Automatisch aus CI/CD laden, falls verfügbar
   gitlabProjectId: process.env.GITLAB_PROJECT_ID || process.env.CI_PROJECT_ID,
@@ -37,9 +71,6 @@ const CONFIG = {
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
   logLevel: process.env.LOG_LEVEL || 'info'
 };
-
-// KI System-Prompt für die Content-Transformation
-const AI_SYSTEM_PROMPT = `Du bist ein Redakteur. Wandle diesen Text in sauberes Markdown für VitePress um. Korrigiere Rechtschreibung und Grammatik. Erstelle einen YAML-Frontmatter-Block mit title (aus dem Inhalt) und description. Füge die Bilder an passenden Stellen ein, wenn der Text Platzhalter enthält, oder am Ende. Erstelle auch eine ca. 100 Wörter lange Zusammenfassung als TL;DR Block am Anfang. Nutze gerade auch den Inhalt der aktuellen .md-Datei und versuche Struktur und bestehenden Inhalt nur zu ergänzen durch den neuen Inhalt. Arbeite mit Überschriften und Navigation.`;
 
 // ========================================
 // Logger
@@ -208,9 +239,23 @@ class DriveService {
 // ========================================
 
 class ContentProcessor {
-  constructor(googleApiKey) {
+  constructor(googleApiKey, geminiModelName, geminiSystemPrompt) {
     this.genAI = new GoogleGenerativeAI(googleApiKey);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' });
+    
+    const modelConfig = {
+      model: geminiModelName,
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 16384,
+      }
+    };
+    
+    this.model = this.genAI.getGenerativeModel(modelConfig);
+    this.systemPrompt = geminiSystemPrompt;
+    
+    Logger.debug(`ContentProcessor initialisiert mit Modell: ${geminiModelName}`);
   }
 
   /**
@@ -229,7 +274,6 @@ class ContentProcessor {
         ? `\n\nAktueller Inhalt der Datei:\n\`\`\`\n${existingContent}\n\`\`\``
         : '';
 
-      const fullPrompt = `${AI_SYSTEM_PROMPT}
 
 ${existingContentInfo}
 
@@ -239,7 +283,10 @@ ${rawContent}
 \`\`\`
 ${imageList}`;
 
-      const result = await this.model.generateContent(fullPrompt);
+      Logger.debug(`Prompt-Länge: ${this.geminiSystemPrompt.length} Zeichen`);
+      Logger.debug(`Verwende System-Prompt: ${this.geminiSystemPrompt.substring(0, 100)}...`);
+
+      const result = await this.model.generateContent(this.geminiSystemPrompt);
       const response = await result.response;
       const transformedContent = response.text();
 
@@ -422,7 +469,7 @@ class ContentSynchronizer {
   constructor(config) {
     this.config = config;
     this.driveService = new DriveService(config.googleApiKey);
-    this.contentProcessor = new ContentProcessor(config.googleApiKey);
+    this.contentProcessor = new ContentProcessor(config.googleApiKey, config.geminiModel, config.geminiSystemPrompt);
     this.gitService = new GitService(config.repoPath);
     this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
     this.changesDetected = false;
