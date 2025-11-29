@@ -54,16 +54,75 @@ Inhalt:
 - Korrigiere Rechtschreibfehler und Grammatikfehler
 `;
 
+/**
+ * Erkenne dynamisch die Git-Provider API URL
+ * Basierend auf CI-Variablen oder Git Remote URL
+ */
+function detectGitApiUrl() {
+  // Explizit gesetzte URLs haben Vorrang
+  if (process.env.GIT_API_URL) return process.env.GIT_API_URL;
+  if (process.env.GITLAB_API_URL) return process.env.GITLAB_API_URL;
+  if (process.env.CI_API_V4_URL) return process.env.CI_API_V4_URL;
+  
+  // GitHub Actions Umgebung
+  if (process.env.GITHUB_API_URL) {
+    return process.env.GITHUB_API_URL; // Standard: https://api.github.com
+  }
+  
+  // Erkenne anhand CI-spezifischer Variablen
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    return 'https://api.github.com';
+  }
+  
+  if (process.env.GITLAB_CI === 'true' || process.env.CI_SERVER_URL) {
+    const serverUrl = process.env.CI_SERVER_URL || 'https://gitlab.com';
+    return `${serverUrl}/api/v4`;
+  }
+  
+  // Versuche aus Git Remote URL zu erkennen (sync, keine async hier)
+  try {
+    const { execSync } = require('child_process');
+    const remoteUrl = execSync('git config --get remote.origin.url', { 
+      encoding: 'utf8',
+      cwd: process.env.REPO_PATH || process.env.CI_PROJECT_DIR || process.cwd(),
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+    
+    if (remoteUrl.includes('github.com')) {
+      return 'https://api.github.com';
+    } else if (remoteUrl.includes('gitlab.com')) {
+      return 'https://gitlab.com/api/v4';
+    } else if (remoteUrl.match(/^https?:\/\/([^\/]+)/)) {
+      // Self-hosted GitLab: Extrahiere Domain und nehme an es ist GitLab
+      const match = remoteUrl.match(/^https?:\/\/([^\/]+)/);
+      if (match) {
+        return `https://${match[1]}/api/v4`;
+      }
+    }
+  } catch (e) {
+    // Ignoriere Fehler, nutze Fallback
+  }
+  
+  // Fallback zu GitLab
+  return 'https://gitlab.com/api/v4';
+}
+
 const CONFIG = {
   driveFolderId: process.env.DRIVE_FOLDER_ID,
   googleApiKey: process.env.GOOGLE_API_KEY,
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3-pro-preview',
   geminiSystemPrompt: process.env.GEMINI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
-  gitlabToken: process.env.CI_JOB_TOKEN || process.env.GITLAB_TOKEN,
-  // Automatisch aus CI/CD laden, falls verfügbar
-  gitlabProjectId: process.env.GITLAB_PROJECT_ID || process.env.CI_PROJECT_ID,
-  gitlabApiUrl: process.env.GITLAB_API_URL || process.env.CI_API_V4_URL || 'https://gitlab.com/api/v4',
-  repoPath: process.env.REPO_PATH || process.env.CI_PROJECT_DIR || process.cwd(),
+  // Git-Provider Token (funktioniert mit GitLab und GitHub)
+  // GitHub Actions: GITHUB_TOKEN (automatisch gesetzt)
+  // GitLab CI: CI_JOB_TOKEN (automatisch gesetzt)
+  gitAccessToken: process.env.GIT_ACCESS_TOKEN || process.env.GITHUB_TOKEN || process.env.CI_JOB_TOKEN || process.env.GITLAB_TOKEN,
+  // Git-Provider Projekt/Repository ID
+  // GitHub: GITHUB_REPOSITORY (z.B. "owner/repo")
+  // GitLab: CI_PROJECT_ID (numeric ID)
+  gitProjectId: process.env.GIT_PROJECT_ID || process.env.GITHUB_REPOSITORY || process.env.GITLAB_PROJECT_ID || process.env.CI_PROJECT_ID,
+  // Git-Provider API URL (dynamisch erkannt)
+  gitApiUrl: detectGitApiUrl(),
+  repoPath: process.env.REPO_PATH || process.env.GITHUB_WORKSPACE || process.env.CI_PROJECT_DIR || process.cwd(),
   contentPath: process.env.CONTENT_PATH || 'docs',
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
   logLevel: process.env.LOG_LEVEL || 'info'
@@ -349,10 +408,12 @@ source_files: ${fileList}
 // ========================================
 
 class GitService {
-  constructor(repoPath, gitlabToken) {
+  constructor(repoPath, gitAccessToken) {
     this.git = simpleGit(repoPath);
     this.repoPath = repoPath;
-    this.gitlabToken = gitlabToken;
+    this.gitAccessToken = gitAccessToken;
+    this.authConfigured = false;
+    this.credentialsFile = null;
     Logger.debug(`GitService initialisiert`);
   }
 
@@ -370,16 +431,23 @@ class GitService {
   }
 
   /**
-   * Konfiguriere Git mit GitLab Token für Authentifizierung
+   * Konfiguriere Git mit Access Token für Authentifizierung über Credential Helper
+   * Funktioniert mit GitLab und GitHub
    */
-  async configureAuth(gitlabToken) {
+  async configureAuth(gitAccessToken) {
     try {
-      if (!gitlabToken) {
-        Logger.debug('Kein GitLab Token vorhanden - überspringe Auth-Konfiguration');
+      if (!gitAccessToken) {
+        Logger.debug('Kein Access Token vorhanden - überspringe Auth-Konfiguration');
         return;
       }
 
-      // Hole die aktuelle Remote-URL
+      // Wenn bereits konfiguriert, nicht erneut ändern
+      if (this.authConfigured) {
+        Logger.debug('Auth bereits konfiguriert, überspringe');
+        return;
+      }
+
+      // Hole die aktuelle Remote-URL um den Hostnamen zu extrahieren
       const remotes = await this.git.getRemotes(true);
       const origin = remotes.find(r => r.name === 'origin');
       
@@ -388,34 +456,36 @@ class GitService {
         return;
       }
 
+      // Extrahiere Hostname aus der URL
       let url = origin.refs.fetch;
-      Logger.debug(`Original URL: ${url}`);
+      let hostname = 'github.com'; // Default
       
-      // Konvertiere SSH zu HTTPS falls nötig
+      // SSH Format: git@github.com:user/repo.git
       if (url.startsWith('git@')) {
-        url = url.replace(/^git@([^:]+):(.+)$/, 'https://$1/$2');
+        const match = url.match(/^git@([^:]+):/);
+        if (match) hostname = match[1];
+      } 
+      // HTTPS Format: https://github.com/user/repo.git
+      else if (url.startsWith('http')) {
+        const match = url.match(/^https?:\/\/(?:[^@]+@)?([^\/]+)/);
+        if (match) hostname = match[1];
       }
       
-      // Extrahiere saubere URL ohne jegliche Authentifizierung
-      // Matche: https://[optional auth@]hostname/path
-      const match = url.match(/^https:\/\/(?:[^@]+@)?([^\/]+\/.+)$/);
+      Logger.debug(`Konfiguriere Git Credential Helper für ${hostname}`);
       
-      if (!match) {
-        Logger.error(`Ungültiges URL-Format: ${url}`);
-        return;
-      }
+      // Credentials-Datei im Repo-Verzeichnis (wird von .gitignore ausgeschlossen)
+      this.credentialsFile = path.join(this.repoPath, '.git-credentials-temp');
       
-      // Baue saubere URL mit Token neu auf
-      const cleanPath = match[1]; // z.B. "gitlab.com/username/project.git"
-      const urlWithToken = `https://oauth2:${gitlabToken}@${cleanPath}`;
+      // Schreibe Credentials in Datei mit restriktiven Permissions (read-only für Owner)
+      // Format funktioniert sowohl mit GitLab (oauth2) als auch GitHub (x-access-token)
+      const credentialContent = `https://oauth2:${gitAccessToken}@${hostname}\n`;
+      await fs.writeFile(this.credentialsFile, credentialContent, { mode: 0o400 });
       
-      Logger.debug(`Neue URL: https://***@${cleanPath}`);
+      // Konfiguriere Git Credential Helper (lokal für dieses Repo)
+      await this.git.addConfig('credential.helper', `store --file=${this.credentialsFile}`, false, 'local');
       
-      // Setze die neue Remote-URL (nur für diesen Vorgang)
-      await this.git.removeRemote('origin');
-      await this.git.addRemote('origin', urlWithToken);
-      
-      Logger.debug('Git-Authentifizierung konfiguriert');
+      this.authConfigured = true;
+      Logger.debug(`Git-Authentifizierung via Credential Helper konfiguriert (${this.credentialsFile})`);
     } catch (error) {
       Logger.error('Fehler bei der Git-Auth-Konfiguration:', error.message);
       throw error;
@@ -431,7 +501,7 @@ class GitService {
       Logger.debug(`Erstelle Branch: ${branchName} (Basis: ${currentBranch})`);
       
       // Konfiguriere Authentifizierung vor Remote-Operationen
-      await this.configureAuth(this.gitlabToken);
+      await this.configureAuth(this.gitAccessToken);
             
       // Hole aktuelle Änderungen vom aktuellen Branch
       await this.git.pull('origin', currentBranch);
@@ -481,7 +551,7 @@ class GitService {
       Logger.debug(`Pushe Branch: ${branchName}`);
       
       // Konfiguriere Authentifizierung vor Remote-Operationen
-      await this.configureAuth(this.gitlabToken);
+      await this.configureAuth(this.gitAccessToken);
       
       await this.git.push('origin', branchName, ['--set-upstream']);
       Logger.success(`Branch ${branchName} gepusht`);
@@ -499,27 +569,75 @@ class GitService {
     try {
       await this.git.checkout(branchName);
       Logger.debug(`Zurück auf ${branchName} Branch`);
+      
+      // Räume Credentials auf
+      await this.cleanupAuth();
     } catch (error) {
       Logger.error(`Fehler beim Wechsel zu ${branchName}:`, error.message);
+    }
+  }
+
+  /**
+   * Räume Git Credentials auf
+   */
+  async cleanupAuth() {
+    try {
+      if (!this.authConfigured) {
+        Logger.debug('Keine Auth-Konfiguration zum Aufräumen');
+        return;
+      }
+
+      Logger.debug('Räume Git Credentials auf');
+      
+      // Entferne lokale Credential Helper Konfiguration
+      try {
+        await this.git.raw(['config', '--local', '--unset', 'credential.helper']);
+      } catch (e) {
+        // Ignoriere Fehler falls nicht gesetzt
+      }
+      
+      // Lösche Credentials-Datei (nur wenn Pfad gesetzt ist)
+      if (this.credentialsFile) {
+        try {
+          await fs.unlink(this.credentialsFile);
+          Logger.debug(`Credentials-Datei gelöscht: ${this.credentialsFile}`);
+        } catch (e) {
+          Logger.debug(`Credentials-Datei konnte nicht gelöscht werden: ${e.message}`);
+        }
+        this.credentialsFile = null;
+      }
+      
+      this.authConfigured = false;
+      Logger.debug('Git Credentials aufgeräumt');
+    } catch (error) {
+      Logger.error('Fehler beim Aufräumen der Credentials:', error.message);
     }
   }
 }
 
 // ========================================
-// GitLab Service
+// Git Provider Service (GitLab/GitHub)
 // ========================================
 
-class GitLabService {
+class GitProviderService {
   constructor(apiUrl, token, projectId) {
     this.apiUrl = apiUrl;
     this.token = token;
     this.projectId = projectId;
-    Logger.debug(`GitLabService initialisiert`);
+    
+    // Erkenne Provider anhand der API URL
+    this.isGitHub = apiUrl.includes('github.com') || apiUrl.includes('api.github.com');
+    this.providerName = this.isGitHub ? 'GitHub' : 'GitLab';
+    
+    Logger.debug(`GitProviderService initialisiert (${this.providerName})`);
+    // Verwende passenden Auth-Header für Provider
+    const headers = this.isGitHub 
+      ? { 'Authorization': `token ${token}` }
+      : { 'PRIVATE-TOKEN': token };
+    
     this.client = axios.create({
       baseURL: apiUrl,
-      headers: {
-        'PRIVATE-TOKEN': token
-      }
+      headers: headers
     });
   }
 
@@ -560,8 +678,8 @@ class ContentSynchronizer {
     this.config = config;
     this.driveService = new DriveService(config.googleApiKey);
     this.contentProcessor = new ContentProcessor(config.googleApiKey, config.geminiModel, config.geminiSystemPrompt);
-    this.gitService = new GitService(config.repoPath, config.gitlabToken);
-    this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
+    this.gitService = new GitService(config.repoPath, config.gitAccessToken);
+    this.gitProviderService = new GitProviderService(config.gitApiUrl, config.gitAccessToken, config.gitProjectId);
     this.changesDetected = false;
     this.processedFolders = [];
     this.contextDocuments = []; // Geladene Context-Dokumente aus Stammverzeichnis
@@ -732,8 +850,8 @@ class ContentSynchronizer {
     const required = {
       driveFolderId: 'DRIVE_FOLDER_ID',
       googleApiKey: 'GOOGLE_API_KEY',
-      gitlabToken: 'GITLAB_TOKEN oder CI_JOB_TOKEN',
-      gitlabProjectId: 'GITLAB_PROJECT_ID oder CI_PROJECT_ID'
+      gitAccessToken: 'GIT_ACCESS_TOKEN, GITLAB_TOKEN, GITHUB_TOKEN oder CI_JOB_TOKEN',
+      gitProjectId: 'GIT_PROJECT_ID, GITLAB_PROJECT_ID oder CI_PROJECT_ID'
     };
     
     const missing = Object.keys(required).filter(key => !this.config[key]);
@@ -959,7 +1077,7 @@ ${this.processedFolders.map(f => `- ${f}`).join('\n')}
 ---
 *Generiert von sync-content.js*`;
 
-      await this.gitlabService.createMergeRequest(branchName, this.baseBranch, mrTitle, mrDescription);
+      await this.gitProviderService.createMergeRequest(branchName, this.baseBranch, mrTitle, mrDescription);
 
       // Zurück zum Basis-Branch
       await this.gitService.returnToBranch(this.baseBranch);
