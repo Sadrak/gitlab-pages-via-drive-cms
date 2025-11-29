@@ -610,6 +610,37 @@ class ContentSynchronizer {
   }
 
   /**
+   * Prüfe ob bereits Änderungen im Content-Verzeichnis vorliegen
+   */
+  async hasExistingChanges() {
+    try {
+      const status = await this.gitService.git.status();
+      
+      // Filtere nur Änderungen im contentPath
+      const contentChanges = status.files.filter(file => {
+        return file.path.startsWith(this.config.contentPath + '/');
+      });
+      
+      const hasChanges = contentChanges.length > 0;
+      
+      if (hasChanges) {
+        Logger.info(`📝 Erkannte bereits vorhandene Änderungen in ${this.config.contentPath}/:`)
+        contentChanges.slice(0, 5).forEach(file => {
+          Logger.info(`   - ${file.path} [${file.working_dir}]`);
+        });
+        if (contentChanges.length > 5) {
+          Logger.info(`   ... und ${contentChanges.length - 5} weitere Datei(en)`);
+        }
+      }
+      
+      return hasChanges;
+    } catch (error) {
+      Logger.debug('Fehler beim Prüfen des Git-Status:', error.message);
+      return false;
+    }
+  }
+
+  /**
    * Hauptmethode: Synchronisation starten
    */
   async sync() {
@@ -621,17 +652,31 @@ class ContentSynchronizer {
       // Validiere Konfiguration
       this.validateConfig();
 
-      // Lade Context-Dokumente aus dem Stammverzeichnis (einmalig für alle Ordner)
-      this.contextDocuments = await this.loadContextDocuments();
+      // Prüfe ob bereits Änderungen vorliegen (z.B. von früherem Lauf)
+      const hasExistingChanges = await this.hasExistingChanges();
+      
+      if (hasExistingChanges) {
+        Logger.info('\n⚡ SKIP-Modus aktiviert: Überspringe Drive/KI-Verarbeitung');
+        Logger.info('   Grund: Es liegen bereits Änderungen im Working Directory vor');
+        Logger.info('   Fahre direkt mit Git-Operationen fort...\n');
+        this.changesDetected = true;
+        this.processedFolders.push('Vorhandene Änderungen');
+      } else {
+        // Normale Verarbeitung: Drive → KI → Dateien schreiben
+        Logger.info('\n📥 Starte normale Verarbeitung (Drive → KI → Git)\n');
+        
+        // Lade Context-Dokumente aus dem Stammverzeichnis (einmalig für alle Ordner)
+        this.contextDocuments = await this.loadContextDocuments();
 
-      // Hole alle Unterordner aus Google Drive
-      Logger.info(`Lade Ordner aus Google Drive (ID: ${this.config.driveFolderId})...`);
-      const folders = await this.driveService.listFolders(this.config.driveFolderId);
-      Logger.info(`${folders.length} Ordner gefunden`);
+        // Hole alle Unterordner aus Google Drive
+        Logger.info(`Lade Ordner aus Google Drive (ID: ${this.config.driveFolderId})...`);
+        const folders = await this.driveService.listFolders(this.config.driveFolderId);
+        Logger.info(`${folders.length} Ordner gefunden`);
 
-      // Verarbeite jeden Ordner
-      for (const folder of folders) {
-        await this.processFolder(folder);
+        // Verarbeite jeden Ordner
+        for (const folder of folders) {
+          await this.processFolder(folder);
+        }
       }
 
       // Wenn Änderungen erkannt wurden, erstelle einen Merge Request
