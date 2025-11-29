@@ -277,6 +277,7 @@ class ContentProcessor {
           contextBlock += `\`\`\`\n${doc.content}\n\`\`\`\n\n`;
         }
       }
+      Logger.debug('Starte KI-Transformation...');
 
       // Erstelle den Prompt mit Kontext
       const imageList = images.length > 0 
@@ -287,7 +288,7 @@ class ContentProcessor {
         ? `\n\nAktueller Inhalt der Datei:\n\`\`\`\n${existingContent}\n\`\`\``
         : '';
 
-      const fullPrompt = `${this.geminiSystemPrompt}
+      const fullPrompt = `${this.systemPrompt}
 ${contextBlock}
 ${existingContentInfo}
 
@@ -297,10 +298,11 @@ ${rawContent}
 \`\`\`
 ${imageList}`;
 
-      Logger.debug(`Prompt-Länge: ${this.geminiSystemPrompt.length} Zeichen`);
+      Logger.debug(`Prompt-Länge: ${this.systemPrompt.length} Zeichen`);
       Logger.debug(`Context-Dokumente: ${contextDocuments.length}`);
-      Logger.debug(`Verwende System-Prompt: ${this.geminiSystemPrompt.substring(0, 100)}...`);
+      Logger.debug(`Verwende System-Prompt: ${this.systemPrompt.substring(0, 100)}...`);
 
+      Logger.debug('Starte KI-Transformation...');
       const result = await this.model.generateContent(fullPrompt);
       const response = await result.response;
       const transformedContent = response.text();
