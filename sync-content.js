@@ -261,9 +261,22 @@ class ContentProcessor {
   /**
    * Transformiere rohen Text mit KI zu Markdown
    */
-  async transformToMarkdown(rawContent, existingContent, images) {
+  async transformToMarkdown(existingContent, rawContent, images, contextDocuments = []) {
     try {
       Logger.debug('Starte KI-Transformation...');
+
+      // Erstelle Context-Block aus geladenen Dokumenten
+      let contextBlock = '';
+      
+      if (contextDocuments.length > 0) {
+        contextBlock = '\n\n## Zusätzliche Anweisungen und Kontext\n\n';
+        contextBlock += 'Beachte folgende Dokumente bei der Content-Erstellung:\n\n';
+        
+        for (const doc of contextDocuments) {
+          contextBlock += `### ${doc.name}\n\n`;
+          contextBlock += `\`\`\`\n${doc.content}\n\`\`\`\n\n`;
+        }
+      }
 
       // Erstelle den Prompt mit Kontext
       const imageList = images.length > 0 
@@ -275,6 +288,7 @@ class ContentProcessor {
         : '';
 
       const fullPrompt = `${this.geminiSystemPrompt}
+${contextBlock}
 ${existingContentInfo}
 
 Neuer/Zusätzlicher Inhalt:
@@ -284,9 +298,10 @@ ${rawContent}
 ${imageList}`;
 
       Logger.debug(`Prompt-Länge: ${this.geminiSystemPrompt.length} Zeichen`);
+      Logger.debug(`Context-Dokumente: ${contextDocuments.length}`);
       Logger.debug(`Verwende System-Prompt: ${this.geminiSystemPrompt.substring(0, 100)}...`);
 
-      const result = await this.model.generateContent(this.geminiSystemPrompt);
+      const result = await this.model.generateContent(fullPrompt);
       const response = await result.response;
       const transformedContent = response.text();
 
@@ -474,6 +489,67 @@ class ContentSynchronizer {
     this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
     this.changesDetected = false;
     this.processedFolders = [];
+    this.contextDocuments = []; // Geladene Context-Dokumente aus Stammverzeichnis
+  }
+
+  /**
+   * Lade alle Context-Dateien aus dem Drive-Stammverzeichnis
+   */
+  async loadContextDocuments() {
+    try {
+      Logger.info('\n--- Lade Context-Dokumente aus Stammverzeichnis ---');
+      
+      // Hole alle Dateien (keine Ordner) aus dem Stammverzeichnis
+      const allFiles = await this.driveService.listFiles(this.config.driveFolderId);
+      
+      // Filtere nur Docs und Sheets (keine Bilder, keine Ordner)
+      const contextFiles = allFiles.filter(file => 
+        file.mimeType === 'application/vnd.google-apps.document' ||
+        file.mimeType === 'application/vnd.google-apps.spreadsheet'
+      );
+      
+      if (contextFiles.length === 0) {
+        Logger.info('Keine Context-Dokumente im Stammverzeichnis gefunden');
+        Logger.info('Hinweis: Legen Sie Dateien wie "Glossar", "Satzung" oder "Wiki" im Hauptordner ab,');
+        Logger.info('         um sie als zusätzlichen Kontext für die KI zu nutzen.');
+        return [];
+      }
+      
+      Logger.info(`${contextFiles.length} Context-Datei(en) gefunden:`);
+      const loadedDocs = [];
+      
+      for (const file of contextFiles) {
+        try {
+          Logger.info(`  Lade "${file.name}"...`);
+          
+          let content = '';
+          if (file.mimeType === 'application/vnd.google-apps.document') {
+            content = await this.driveService.downloadDocContent(file.id);
+          } else if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+            content = await this.driveService.downloadSheetContent(file.id);
+          }
+          
+          loadedDocs.push({
+            name: file.name,
+            content: content,
+            type: file.mimeType
+          });
+          
+          Logger.success(`  ✓ "${file.name}" geladen (${content.length} Zeichen)`);
+        } catch (error) {
+          Logger.error(`  ✗ Fehler beim Laden von "${file.name}":`, error.message);
+        }
+      }
+      
+      if (loadedDocs.length > 0) {
+        Logger.success(`📚 ${loadedDocs.length} Context-Dokument(e) erfolgreich geladen und werden in allen Prompts verwendet`);
+      }
+      
+      return loadedDocs;
+    } catch (error) {
+      Logger.error('Fehler beim Laden der Context-Dokumente:', error.message);
+      return [];
+    }
   }
 
   /**
@@ -487,6 +563,9 @@ class ContentSynchronizer {
 
       // Validiere Konfiguration
       this.validateConfig();
+
+      // Lade Context-Dokumente aus dem Stammverzeichnis (einmalig für alle Ordner)
+      this.contextDocuments = await this.loadContextDocuments();
 
       // Hole alle Unterordner aus Google Drive
       Logger.info(`Lade Ordner aus Google Drive (ID: ${this.config.driveFolderId})...`);
@@ -590,14 +669,15 @@ class ContentSynchronizer {
       // Transformiere mit KI
       Logger.info('  Transformiere Inhalt mit KI...');
       const transformedContent = await this.contentProcessor.transformToMarkdown(
-        textContent,
         existingContent,
-        images
+        textContent,
+        images,
+        this.contextDocuments
       );
 
-      // Füge Metadaten hinzu
+      // Füge Metadaten ans Ende hinzu (damit Frontmatter nicht gestört wird)
       const metadata = this.contentProcessor.createMetadataComment(files, new Date());
-      const finalContent = metadata + transformedContent;
+      const finalContent = transformedContent + '\n\n' + metadata;
 
       // Speichere die Datei
       await fs.writeFile(mdFilePath, finalContent, 'utf-8');

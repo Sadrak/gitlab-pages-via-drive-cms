@@ -20,14 +20,18 @@ Dieses Projekt ermöglicht die automatische Synchronisation von Inhalten aus Goo
 ### Google Drive
 ```
 Hauptordner/
-├── Ordner-1/           # → wird zu /src/ordner-1/
+├── Glossar.gdoc        # ← Context-Dokument (Stammverzeichnis)
+├── Wiki.gdoc           # ← Context-Dokument (Stammverzeichnis)
+├── Ordner-1/           # → wird zu /src/Ordner-1/
 │   ├── Dokument.gdoc
 │   ├── Tabelle.gsheet
 │   └── bild.png
-├── Ordner-2/           # → wird zu /src/ordner-2/
+├── Ordner-2/           # → wird zu /src/Ordner-2/
 │   └── ...
 └── ...
 ```
+
+**💡 Tipp:** Alle Google Docs und Sheets im **Stammverzeichnis** werden automatisch als Context-Dokumente geladen und der KI in jedem Prompt zur Verfügung gestellt!
 
 ### VitePress Repository
 ```
