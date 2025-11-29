@@ -1034,7 +1034,7 @@ class ContentSynchronizer {
   async createAndSubmitMergeRequest() {
     try {
       const timestamp = Date.now();
-      const branchName = `content-update-${new Date(timestamp).toISOString().replace(/[:.]/g, '-')}`;
+      const branchName = `contentupdate/${new Date(timestamp).toISOString().replace(/[:]/g, '-').replace(/[.]\d+/, '')}`;
 
       Logger.info('\n--- Erstelle Git Merge Request ---');
 
