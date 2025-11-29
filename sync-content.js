@@ -392,6 +392,9 @@ class GitService {
       // Format: https://gitlab.com/username/project.git oder git@gitlab.com:username/project.git
       let url = origin.refs.fetch;
       
+      // Entferne existierende Auth-Tokens aus der URL (falls bereits vorhanden)
+      url = url.replace(/^https:\/\/[^@]+@/, 'https://');
+      
       // Konvertiere SSH zu HTTPS falls nötig
       if (url.startsWith('git@')) {
         url = url.replace(/^git@([^:]+):/, 'https://$1/');
@@ -399,9 +402,11 @@ class GitService {
       
       // Füge Token zur URL hinzu
       const urlWithToken = url.replace(
-        /^https:\/\/([^\/]+)\//,
-        `https://oauth2:${gitlabToken}@$1/`
+        /^https:\/\//,
+        `https://oauth2:${gitlabToken}@`
       );
+      
+      Logger.debug(`Remote-URL konfiguriert: ${url.replace(/\/\/.*@/, '//***@')}`);
       
       // Setze die neue Remote-URL (nur für diesen Vorgang)
       await this.git.removeRemote('origin');
