@@ -66,7 +66,6 @@ const CONFIG = {
   repoPath: process.env.REPO_PATH || process.env.CI_PROJECT_DIR || process.cwd(),
   contentPath: process.env.CONTENT_PATH || 'docs',
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
-  workingBranch: process.env.WORKING_BRANCH || process.env.CI_DEFAULT_BRANCH || 'main',
   logLevel: process.env.LOG_LEVEL || 'info'
 };
 
@@ -350,12 +349,24 @@ source_files: ${fileList}
 // ========================================
 
 class GitService {
-  constructor(repoPath, workingBranch, gitlabToken) {
+  constructor(repoPath, gitlabToken) {
     this.git = simpleGit(repoPath);
     this.repoPath = repoPath;
-    this.workingBranch = workingBranch;
     this.gitlabToken = gitlabToken;
-    Logger.debug(`GitService initialisiert mit Branch: ${workingBranch}`);
+    Logger.debug(`GitService initialisiert`);
+  }
+
+  /**
+   * Ermittle den aktuellen Branch
+   */
+  async getCurrentBranch() {
+    try {
+      const status = await this.git.status();
+      return status.current;
+    } catch (error) {
+      Logger.error('Fehler beim Ermitteln des aktuellen Branches:', error.message);
+      throw error;
+    }
   }
 
   /**
@@ -404,24 +415,24 @@ class GitService {
   }
 
   /**
-   * Erstelle einen neuen Branch
+   * Erstelle einen neuen Branch vom aktuellen Branch aus
    */
   async createBranch(branchName) {
     try {
-      Logger.debug(`Erstelle Branch: ${branchName}`);
+      const currentBranch = await this.getCurrentBranch();
+      Logger.debug(`Erstelle Branch: ${branchName} (Basis: ${currentBranch})`);
       
       // Konfiguriere Authentifizierung vor Remote-Operationen
       await this.configureAuth(this.gitlabToken);
+            
+      // Hole aktuelle Änderungen vom aktuellen Branch
+      await this.git.pull('origin', currentBranch);
       
-      // Stelle sicher, dass wir auf dem Working-Branch sind und aktuell
-      await this.git.checkout(this.workingBranch);
-      await this.git.pull();
-      
-      // Erstelle neuen Branch
+      // Erstelle neuen Branch vom aktuellen Branch aus
       await this.git.checkoutLocalBranch(branchName);
       
-      Logger.success(`Branch ${branchName} erstellt`);
-      return true;
+      Logger.success(`Branch ${branchName} erstellt von ${currentBranch}`);
+      return currentBranch; // Gebe Basis-Branch zurück für spätere Verwendung
     } catch (error) {
       Logger.error('Fehler beim Erstellen des Branches:', error.message);
       throw error;
@@ -474,14 +485,14 @@ class GitService {
   }
 
   /**
-   * Gehe zurück zum Working-Branch
+   * Gehe zurück zum angegebenen Branch
    */
-  async returnToMain() {
+  async returnToBranch(branchName) {
     try {
-      await this.git.checkout(this.workingBranch);
-      Logger.debug(`Zurück auf ${this.workingBranch} Branch`);
+      await this.git.checkout(branchName);
+      Logger.debug(`Zurück auf ${branchName} Branch`);
     } catch (error) {
-      Logger.error(`Fehler beim Wechsel zu ${this.workingBranch}:`, error.message);
+      Logger.error(`Fehler beim Wechsel zu ${branchName}:`, error.message);
     }
   }
 }
@@ -491,12 +502,11 @@ class GitService {
 // ========================================
 
 class GitLabService {
-  constructor(apiUrl, token, projectId, targetBranch) {
+  constructor(apiUrl, token, projectId) {
     this.apiUrl = apiUrl;
     this.token = token;
     this.projectId = projectId;
-    this.targetBranch = targetBranch;
-    Logger.debug(`GitLabService initialisiert mit Target-Branch: ${targetBranch}`);
+    Logger.debug(`GitLabService initialisiert`);
     this.client = axios.create({
       baseURL: apiUrl,
       headers: {
@@ -508,13 +518,13 @@ class GitLabService {
   /**
    * Erstelle einen Merge Request
    */
-  async createMergeRequest(sourceBranch, title, description) {
+  async createMergeRequest(sourceBranch, targetBranch, title, description) {
     try {
-      Logger.debug('Erstelle Merge Request...');
+      Logger.debug(`Erstelle Merge Request: ${sourceBranch} → ${targetBranch}`);
 
       const response = await this.client.post(`/projects/${this.projectId}/merge_requests`, {
         source_branch: sourceBranch,
-        target_branch: this.targetBranch,
+        target_branch: targetBranch,
         title: title,
         description: description,
         labels: ['Content-Update'],
@@ -542,11 +552,12 @@ class ContentSynchronizer {
     this.config = config;
     this.driveService = new DriveService(config.googleApiKey);
     this.contentProcessor = new ContentProcessor(config.googleApiKey, config.geminiModel, config.geminiSystemPrompt);
-    this.gitService = new GitService(config.repoPath, config.workingBranch, config.gitlabToken);
-    this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId, config.workingBranch);
+    this.gitService = new GitService(config.repoPath, config.gitlabToken);
+    this.gitlabService = new GitLabService(config.gitlabApiUrl, config.gitlabToken, config.gitlabProjectId);
     this.changesDetected = false;
     this.processedFolders = [];
     this.contextDocuments = []; // Geladene Context-Dokumente aus Stammverzeichnis
+    this.baseBranch = null; // Wird beim Branch-Erstellen gesetzt
   }
 
   /**
@@ -693,9 +704,11 @@ class ContentSynchronizer {
     } catch (error) {
       Logger.error('Fehler bei der Synchronisation:', error.message);
       
-      // Versuche zum main Branch zurückzukehren
+      // Versuche zum Basis-Branch zurückzukehren (falls gesetzt)
       try {
-        await this.gitService.returnToMain();
+        if (this.baseBranch) {
+          await this.gitService.returnToBranch(this.baseBranch);
+        }
       } catch (e) {
         // Ignoriere Fehler beim Zurückkehren
       }
@@ -899,8 +912,8 @@ class ContentSynchronizer {
 
       Logger.info('\n--- Erstelle Git Merge Request ---');
 
-      // Erstelle Branch
-      await this.gitService.createBranch(branchName);
+      // Erstelle Branch und merke Basis-Branch
+      this.baseBranch = await this.gitService.createBranch(branchName);
 
       // Committe Änderungen
       const commitMessage = `Content Update: ${this.processedFolders.join(', ')}
@@ -920,7 +933,7 @@ Timestamp: ${new Date(timestamp).toISOString()}`;
       // Pushe Branch
       await this.gitService.pushBranch(branchName);
 
-      // Erstelle Merge Request
+      // Erstelle Merge Request zurück zum Basis-Branch
       const mrTitle = `🤖 Content Update vom ${new Date().toLocaleDateString('de-DE')}`;
       const mrDescription = `## Automatisches Content Update
 
@@ -930,17 +943,18 @@ Dieser Merge Request wurde automatisch erstellt durch das Content-Synchronisatio
 ${this.processedFolders.map(f => `- ${f}`).join('\n')}
 
 ### Details
-- **Branch:** \`${branchName}\`
+- **Source Branch:** \`${branchName}\`
+- **Target Branch:** \`${this.baseBranch}\`
 - **Zeitstempel:** ${new Date().toISOString()}
 - **Anzahl Ordner:** ${this.processedFolders.length}
 
 ---
 *Generiert von sync-content.js*`;
 
-      await this.gitlabService.createMergeRequest(branchName, mrTitle, mrDescription);
+      await this.gitlabService.createMergeRequest(branchName, this.baseBranch, mrTitle, mrDescription);
 
-      // Zurück zu main
-      await this.gitService.returnToMain();
+      // Zurück zum Basis-Branch
+      await this.gitService.returnToBranch(this.baseBranch);
 
       Logger.success('\n✓ Merge Request erfolgreich erstellt!');
 
