@@ -261,7 +261,7 @@ class ContentProcessor {
   /**
    * Transformiere rohen Text mit KI zu Markdown
    */
-  async transformToMarkdown(existingContent, rawContent, images, contextDocuments = []) {
+  async transformToMarkdown(rawContent, images, existingContent, contextDocuments = []) {
     try {
       Logger.debug('Starte KI-Transformation...');
 
@@ -713,10 +713,10 @@ class ContentSynchronizer {
       // Transformiere mit KI
       Logger.info('  Transformiere Inhalt mit KI...');
       const transformedContent = await this.contentProcessor.transformToMarkdown(
-        existingContent,
         textContent,
         images,
-        this.contextDocuments
+        existingContent,
+        this.contextDocuments,
       );
 
       // Füge Metadaten ans Ende hinzu (damit Frontmatter nicht gestört wird)
