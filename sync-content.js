@@ -409,6 +409,10 @@ source_files: ${fileList}
 
 class GitService {
   constructor(repoPath, gitAccessToken) {
+    this.repoPath = repoPath;
+    this.gitAccessToken = gitAccessToken;
+    this.remoteName = 'origin'; // Wird zu 'sync-origin' wenn Token vorhanden
+    
     // Konfiguriere simple-git mit Token als Environment Variable
     const gitEnv = {};
     
@@ -428,9 +432,69 @@ class GitService {
       }
     });
     
-    this.repoPath = repoPath;
-    this.gitAccessToken = gitAccessToken;
     Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''}`);
+  }
+  
+  /**
+   * Erstelle einen dedizierten HTTPS Remote für Token-Auth
+   * Lässt origin unverändert und erstellt sync-origin mit HTTPS URL (OHNE Token)
+   * Token wird über Environment Variables (GIT_PASSWORD) zur Laufzeit genutzt
+   */
+  async ensureSyncRemote() {
+    try {
+      if (!this.gitAccessToken) {
+        return; // Kein Token = nutze origin direkt
+      }
+      
+      const remotes = await this.git.getRemotes(true);
+      const origin = remotes.find(r => r.name === 'origin');
+      
+      if (!origin) {
+        Logger.error('Kein "origin" Remote gefunden');
+        return;
+      }
+      
+      let url = origin.refs.fetch;
+      let httpsUrl = url;
+      
+      // Konvertiere SSH zu HTTPS falls nötig (OHNE Token in URL)
+      if (url.startsWith('git@')) {
+        const match = url.match(/^git@([^:]+):(.+)$/);
+        if (match) {
+          const hostname = match[1];
+          const repoPath = match[2];
+          httpsUrl = `https://${hostname}/${repoPath}`;
+          Logger.debug(`Konvertiere SSH zu HTTPS für sync-origin (Token via Env)`);
+        }
+      } else if (url.startsWith('http')) {
+        // HTTPS URL: Entferne vorhandene Auth-Infos, Token kommt via Env
+        const match = url.match(/^https?:\/\/(?:[^@]+@)?([^\/]+\/.+)$/);
+        if (match) {
+          httpsUrl = `https://${match[1]}`;
+        }
+      }
+      
+      // Prüfe ob sync-origin bereits existiert
+      const syncOrigin = remotes.find(r => r.name === 'sync-origin');
+      
+      if (syncOrigin) {
+        // Aktualisiere URL falls sie sich geändert hat
+        await this.git.remote(['set-url', 'sync-origin', httpsUrl]);
+        Logger.debug('sync-origin Remote aktualisiert (Token wird via Env genutzt)');
+      } else {
+        // Erstelle neuen sync-origin Remote
+        await this.git.addRemote('sync-origin', httpsUrl);
+        Logger.debug('sync-origin Remote erstellt (Token wird via Env genutzt)');
+      }
+      
+      // Nutze sync-origin für alle Operationen
+      this.remoteName = 'sync-origin';
+      
+    } catch (error) {
+      Logger.error('Fehler beim Erstellen des sync-origin Remote:', error.message);
+      // Fallback zu origin
+      this.remoteName = 'origin';
+    }
   }
 
   /**
@@ -454,8 +518,11 @@ class GitService {
       const currentBranch = await this.getCurrentBranch();
       Logger.debug(`Erstelle Branch: ${branchName} (Basis: ${currentBranch})`);
       
+      // Erstelle/aktualisiere sync-origin Remote für Token-Auth
+      await this.ensureSyncRemote();
+      
       // Hole aktuelle Änderungen vom aktuellen Branch
-      await this.git.pull('origin', currentBranch);
+      await this.git.pull(this.remoteName, currentBranch);
       
       // Erstelle neuen Branch vom aktuellen Branch aus
       await this.git.checkoutLocalBranch(branchName);
@@ -499,9 +566,9 @@ class GitService {
    */
   async pushBranch(branchName) {
     try {
-      Logger.debug(`Pushe Branch: ${branchName}`);
+      Logger.debug(`Pushe Branch: ${branchName} (Remote: ${this.remoteName})`);
       
-      await this.git.push('origin', branchName, ['--set-upstream']);
+      await this.git.push(this.remoteName, branchName, ['--set-upstream']);
       Logger.success(`Branch ${branchName} gepusht`);
       return true;
     } catch (error) {
@@ -517,6 +584,7 @@ class GitService {
     try {
       await this.git.checkout(branchName);
       Logger.debug(`Zurück auf ${branchName} Branch`);
+      // sync-origin bleibt bestehen für zukünftige Runs
     } catch (error) {
       Logger.error(`Fehler beim Wechsel zu ${branchName}:`, error.message);
     }
