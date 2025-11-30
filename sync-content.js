@@ -409,12 +409,28 @@ source_files: ${fileList}
 
 class GitService {
   constructor(repoPath, gitAccessToken) {
-    this.git = simpleGit(repoPath);
+    // Konfiguriere simple-git mit Token als Environment Variable
+    const gitEnv = {};
+    
+    if (gitAccessToken) {
+      // GIT_ASKPASS wird von Git verwendet um Credentials abzufragen
+      // Wir setzen einen Helper der direkt den Token zurückgibt
+      gitEnv.GIT_ASKPASS = '/bin/echo';
+      gitEnv.GIT_USERNAME = 'oauth2';
+      gitEnv.GIT_PASSWORD = gitAccessToken;
+    }
+    
+    this.git = simpleGit(repoPath, {
+      config: [],
+      env: {
+        ...process.env,
+        ...gitEnv
+      }
+    });
+    
     this.repoPath = repoPath;
     this.gitAccessToken = gitAccessToken;
-    this.authConfigured = false;
-    this.credentialsFile = null;
-    Logger.debug(`GitService initialisiert`);
+    Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''}`);
   }
 
   /**
@@ -431,68 +447,6 @@ class GitService {
   }
 
   /**
-   * Konfiguriere Git mit Access Token für Authentifizierung über Credential Helper
-   * Funktioniert mit GitLab und GitHub
-   */
-  async configureAuth(gitAccessToken) {
-    try {
-      if (!gitAccessToken) {
-        Logger.debug('Kein Access Token vorhanden - überspringe Auth-Konfiguration');
-        return;
-      }
-
-      // Wenn bereits konfiguriert, nicht erneut ändern
-      if (this.authConfigured) {
-        Logger.debug('Auth bereits konfiguriert, überspringe');
-        return;
-      }
-
-      // Hole die aktuelle Remote-URL um den Hostnamen zu extrahieren
-      const remotes = await this.git.getRemotes(true);
-      const origin = remotes.find(r => r.name === 'origin');
-      
-      if (!origin) {
-        Logger.error('Kein "origin" Remote gefunden');
-        return;
-      }
-
-      // Extrahiere Hostname aus der URL
-      let url = origin.refs.fetch;
-      let hostname = 'github.com'; // Default
-      
-      // SSH Format: git@github.com:user/repo.git
-      if (url.startsWith('git@')) {
-        const match = url.match(/^git@([^:]+):/);
-        if (match) hostname = match[1];
-      } 
-      // HTTPS Format: https://github.com/user/repo.git
-      else if (url.startsWith('http')) {
-        const match = url.match(/^https?:\/\/(?:[^@]+@)?([^\/]+)/);
-        if (match) hostname = match[1];
-      }
-      
-      Logger.debug(`Konfiguriere Git Credential Helper für ${hostname}`);
-      
-      // Credentials-Datei im Repo-Verzeichnis (wird von .gitignore ausgeschlossen)
-      this.credentialsFile = path.join(this.repoPath, '.git-credentials-temp');
-      
-      // Schreibe Credentials in Datei mit restriktiven Permissions (read-only für Owner)
-      // Format funktioniert sowohl mit GitLab (oauth2) als auch GitHub (x-access-token)
-      const credentialContent = `https://oauth2:${gitAccessToken}@${hostname}\n`;
-      await fs.writeFile(this.credentialsFile, credentialContent, { mode: 0o400 });
-      
-      // Konfiguriere Git Credential Helper (lokal für dieses Repo)
-      await this.git.addConfig('credential.helper', `store --file=${this.credentialsFile}`, false, 'local');
-      
-      this.authConfigured = true;
-      Logger.debug(`Git-Authentifizierung via Credential Helper konfiguriert (${this.credentialsFile})`);
-    } catch (error) {
-      Logger.error('Fehler bei der Git-Auth-Konfiguration:', error.message);
-      throw error;
-    }
-  }
-
-  /**
    * Erstelle einen neuen Branch vom aktuellen Branch aus
    */
   async createBranch(branchName) {
@@ -500,9 +454,6 @@ class GitService {
       const currentBranch = await this.getCurrentBranch();
       Logger.debug(`Erstelle Branch: ${branchName} (Basis: ${currentBranch})`);
       
-      // Konfiguriere Authentifizierung vor Remote-Operationen
-      await this.configureAuth(this.gitAccessToken);
-            
       // Hole aktuelle Änderungen vom aktuellen Branch
       await this.git.pull('origin', currentBranch);
       
@@ -550,9 +501,6 @@ class GitService {
     try {
       Logger.debug(`Pushe Branch: ${branchName}`);
       
-      // Konfiguriere Authentifizierung vor Remote-Operationen
-      await this.configureAuth(this.gitAccessToken);
-      
       await this.git.push('origin', branchName, ['--set-upstream']);
       Logger.success(`Branch ${branchName} gepusht`);
       return true;
@@ -569,48 +517,8 @@ class GitService {
     try {
       await this.git.checkout(branchName);
       Logger.debug(`Zurück auf ${branchName} Branch`);
-      
-      // Räume Credentials auf
-      await this.cleanupAuth();
     } catch (error) {
       Logger.error(`Fehler beim Wechsel zu ${branchName}:`, error.message);
-    }
-  }
-
-  /**
-   * Räume Git Credentials auf
-   */
-  async cleanupAuth() {
-    try {
-      if (!this.authConfigured) {
-        Logger.debug('Keine Auth-Konfiguration zum Aufräumen');
-        return;
-      }
-
-      Logger.debug('Räume Git Credentials auf');
-      
-      // Entferne lokale Credential Helper Konfiguration
-      try {
-        await this.git.raw(['config', '--local', '--unset', 'credential.helper']);
-      } catch (e) {
-        // Ignoriere Fehler falls nicht gesetzt
-      }
-      
-      // Lösche Credentials-Datei (nur wenn Pfad gesetzt ist)
-      if (this.credentialsFile) {
-        try {
-          await fs.unlink(this.credentialsFile);
-          Logger.debug(`Credentials-Datei gelöscht: ${this.credentialsFile}`);
-        } catch (e) {
-          Logger.debug(`Credentials-Datei konnte nicht gelöscht werden: ${e.message}`);
-        }
-        this.credentialsFile = null;
-      }
-      
-      this.authConfigured = false;
-      Logger.debug('Git Credentials aufgeräumt');
-    } catch (error) {
-      Logger.error('Fehler beim Aufräumen der Credentials:', error.message);
     }
   }
 }
