@@ -416,8 +416,10 @@ class GitService {
     this.gitAccessToken = gitAccessToken;
     this.remoteName = 'origin'; // Wird zu 'sync-origin' wenn Token vorhanden
     
-    // Konfiguriere simple-git mit Token als Environment Variable
-    const gitEnv = {};
+    // Environment Variables für Git Auth und User-Config
+    const gitEnv = {
+      ...process.env
+    };
     
     if (gitAccessToken) {
       // GIT_ASKPASS wird von Git verwendet um Credentials abzufragen
@@ -435,10 +437,7 @@ class GitService {
     
     this.git = simpleGit(repoPath, {
       config: gitConfig,
-      env: {
-        ...process.env,
-        ...gitEnv
-      }
+      env: gitEnv
     });
     
     Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''} (User: ${userName} <${userEmail}>)`);
