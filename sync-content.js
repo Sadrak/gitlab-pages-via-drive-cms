@@ -419,8 +419,7 @@ class GitService {
     // Git-Config für Benutzer (wird für Commits benötigt)
     const gitConfig = [
       `user.name=${userName}`,
-      `user.email=${userEmail}`,
-      `http.extraHeader=Authorization: Basic ${authString}`     
+      `user.email=${userEmail}`
     ];
 
     if (gitAccessToken) {
