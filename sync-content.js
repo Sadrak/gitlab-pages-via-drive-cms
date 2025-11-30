@@ -125,7 +125,10 @@ const CONFIG = {
   repoPath: process.env.REPO_PATH || process.env.GITHUB_WORKSPACE || process.env.CI_PROJECT_DIR || process.cwd(),
   contentPath: process.env.CONTENT_PATH || 'docs',
   assetsPath: process.env.ASSETS_PATH || 'public/assets',
-  logLevel: process.env.LOG_LEVEL || 'info'
+  logLevel: process.env.LOG_LEVEL || 'info',
+  // Git Benutzer-Konfiguration für Commits
+  gitUserName: process.env.GIT_USER_NAME || process.env.GITLAB_USER_NAME || 'Content Sync Bot',
+  gitUserEmail: process.env.GIT_USER_EMAIL || process.env.GITLAB_USER_EMAIL || 'bot@content-sync.local'
 };
 
 // ========================================
@@ -408,7 +411,7 @@ source_files: ${fileList}
 // ========================================
 
 class GitService {
-  constructor(repoPath, gitAccessToken) {
+  constructor(repoPath, gitAccessToken, userName, userEmail) {
     this.repoPath = repoPath;
     this.gitAccessToken = gitAccessToken;
     this.remoteName = 'origin'; // Wird zu 'sync-origin' wenn Token vorhanden
@@ -424,15 +427,21 @@ class GitService {
       gitEnv.GIT_PASSWORD = gitAccessToken;
     }
     
+    // Git-Config für Benutzer (wird für Commits benötigt)
+    const gitConfig = [
+      `user.name=${userName}`,
+      `user.email=${userEmail}`
+    ];
+    
     this.git = simpleGit(repoPath, {
-      config: [],
+      config: gitConfig,
       env: {
         ...process.env,
         ...gitEnv
       }
     });
     
-    Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''}`);
+    Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''} (User: ${userName} <${userEmail}>)`);
   }
   
   /**
@@ -654,7 +663,7 @@ class ContentSynchronizer {
     this.config = config;
     this.driveService = new DriveService(config.googleApiKey);
     this.contentProcessor = new ContentProcessor(config.googleApiKey, config.geminiModel, config.geminiSystemPrompt);
-    this.gitService = new GitService(config.repoPath, config.gitAccessToken);
+    this.gitService = new GitService(config.repoPath, config.gitAccessToken, config.gitUserName, config.gitUserEmail);
     this.gitProviderService = new GitProviderService(config.gitApiUrl, config.gitAccessToken, config.gitProjectId);
     this.changesDetected = false;
     this.processedFolders = [];
