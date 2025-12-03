@@ -130,7 +130,7 @@ const CONFIG = {
   gitApiUrl: detectGitApiUrl(),
   repoPath: process.env.REPO_PATH || process.env.GITHUB_WORKSPACE || process.env.CI_PROJECT_DIR || process.cwd(),
   contentPath: process.env.CONTENT_PATH || 'docs',
-  assetsPath: process.env.ASSETS_PATH || 'public/assets',
+  assetsPath: process.env.ASSETS_PATH || 'public',
   logLevel: process.env.LOG_LEVEL || 'info',
   // Git Benutzer-Konfiguration für Commits
   gitUserName: process.env.GIT_USER_NAME || process.env.GITLAB_USER_NAME || 'Content Sync Bot',
@@ -545,21 +545,22 @@ class GitService {
   }
 
   /**
-   * Committe Änderungen
+   * Committe Änderungen (nur im angegebenen Pfad)
    */
-  async commitChanges(message) {
+  async commitChanges(message, contentPath) {
     try {
-      Logger.debug('Füge Änderungen hinzu...');
-      await this.git.add('.');
+      Logger.debug(`Füge Änderungen in ${contentPath}/ hinzu...`);
+      await this.git.add(contentPath);
       
       const status = await this.git.status();
       
-      if (status.files.length === 0) {
+      // Prüfe ob es staged Änderungen gibt
+      if (status.staged.length === 0) {
         Logger.info('Keine Änderungen zum Committen');
         return false;
       }
 
-      Logger.debug(`Committe ${status.files.length} Dateien...`);
+      Logger.debug(`Committe ${status.staged.length} Dateien aus ${contentPath}/...`);
       await this.git.commit(message);
       
       Logger.success('Änderungen committed');
@@ -857,8 +858,8 @@ class ContentSynchronizer {
       // Pfade definieren
       const folderFileSlug = this.sanitizeFolderName(folder.name);
       const mdFilePath = path.join(this.config.repoPath, this.config.contentPath, folderFileSlug) + '.md';
-      // Assets unter docs/assets/{folderFileSlug} speichern
-      const assetsDir = path.join(this.config.repoPath, this.config.contentPath, 'assets', folderFileSlug);
+      // Assets unter docs/public/{folderFileSlug} speichern
+      const assetsDir = path.join(this.config.repoPath, this.config.contentPath, this.config.assetsPath, folderFileSlug);
       const contentDir = path.dirname(mdFilePath);
 
       // Prüfe, ob Ordner aktualisiert werden muss
@@ -1033,7 +1034,7 @@ Automatisch synchronisiert von Google Drive
 Bearbeitete Ordner: ${this.processedFolders.length}
 Timestamp: ${new Date(timestamp).toISOString()}`;
 
-      const hasChanges = await this.gitService.commitChanges(commitMessage);
+      const hasChanges = await this.gitService.commitChanges(commitMessage, this.config.contentPath);
 
       if (!hasChanges) {
         Logger.info('Keine Git-Änderungen zum Pushen');
