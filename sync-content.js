@@ -979,7 +979,7 @@ class ContentSynchronizer {
         // Bilder
         else if (file.mimeType.startsWith('image/')) {
           const imageBuffer = await this.driveService.downloadImage(file.id);
-          const ext = this.getImageExtension(file.mimeType);
+          const ext = this.getImageExtensionIfNeeded(file.name, file.mimeType);
           const imageName = this.sanitizeFileName(file.name);
           const imagePath = path.join(assetsDir, `${imageName}${ext}`);
           
@@ -1096,6 +1096,28 @@ ${this.processedFolders.map(f => `- ${f}`).join('\n')}
       'image/svg+xml': '.svg'
     };
     return extensions[mimeType] || '.jpg';
+  }
+
+  /**
+   * Hilfsfunktion: Ermittle Dateiendung nur, wenn der Dateiname noch keine passende hat
+   * Vermeidet doppelte Endungen wie "Felix.jpg.jpg"
+   */
+  getImageExtensionIfNeeded(fileName, mimeType) {
+    
+    // Liste aller bekannten Bild-Endungen
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
+    
+    // Prüfe ob der Dateiname bereits mit einer Bild-Endung endet
+    const lowerFileName = fileName.toLowerCase();
+    for (const ext of imageExtensions) {
+      if (lowerFileName.endsWith(ext)) {
+        // Dateiname hat bereits eine Bild-Endung - keine weitere hinzufügen
+        return '';
+      }
+    }
+    
+    // Keine bekannte Endung gefunden - füge die passende hinzu
+    return this.getImageExtension(mimeType);;
   }
 }
 
