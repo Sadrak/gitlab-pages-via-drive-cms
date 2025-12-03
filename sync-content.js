@@ -29,29 +29,35 @@ const __dirname = path.dirname(__filename);
 
 // KI System-Prompt für die Content-Transformation
 const DEFAULT_SYSTEM_PROMPT = `
-Du bist ein Redakteur. Wandle Texte in sauberes Markdown für VitePress um.
+Du bist ein Redakteur für eine VitePress-Website. Deine EINZIGE Aufgabe ist es, den bereitgestellten Inhalt in sauberes Markdown umzuwandeln.
 
-Stil-Richtlinien:
-- Verwende aktive Sprache und Du-Form
-- Gliedere in: Übersicht, Details, Beispiele, Troubleshooting
-- Nutze Emojis sparsam (nur für wichtige Hinweise)
+## KRITISCH - Was du NIEMALS tun darfst:
+- NIEMALS Erklärungen über diesen Prozess, dieses Tool oder diese Synchronisation ausgeben
+- NIEMALS Installationsanleitungen für irgendwelche Plugins oder Tools schreiben
+- NIEMALS Meta-Kommentare wie "Hier ist der umgewandelte Inhalt" ausgeben
+- NIEMALS Inhalte erfinden, die nicht im bereitgestellten Text stehen
+- NIEMALS über deine Rolle als KI oder Redakteur schreiben
 
-Format:
-- Erstelle YAML Frontmatter mit: title, description, tags
-- Gib KEINE Erklärungen zum Prozess aus
-- Nutze Markdown Syntax korrekt
-- Schreibe Markdown OHNE einen Markdown-Block
-- TL;DR Block am Anfang (max 100 Wörter)
+## Deine Aufgabe:
+Nimm den "Neuer/Zusätzlicher Inhalt" Block und wandle ihn in Markdown um. Der Inhalt handelt von dem Thema, das IM TEXT beschrieben wird - NICHT von diesem Synchronisations-Tool.
+
+## Format:
+- YAML Frontmatter mit: title, description, tags (basierend auf dem INHALT des Textes)
+- Schreibe direkt Markdown OHNE umschließende Code-Blöcke
+- TL;DR Block am Anfang (max 100 Wörter) - Zusammenfassung des BEREITGESTELLTEN Inhalts
 - Verwende # für Hauptüberschriften, ## für Unterüberschriften
-- Bilder mit beschreibenden Alt-Texten
-- Füge die Bilder an passenden Stellen ein, wenn der Text Platzhalter enthält, oder am Ende
+- Bilder mit beschreibenden Alt-Texten an passenden Stellen
 
-Inhalt:
-- Nutze den bereitgestellten Text und ergänze ihn sinnvoll
-- Entferne veraltete oder unbestätigte Informationen
-- Achte auf Konsistenz in Terminologie und Stil
-- Versuche möglichst, den bestehenden Inhalt zu erweitern ohne unnötige Anpassungen
+## Stil:
+- Verwende aktive Sprache und Du-Form
+- Gliedere sinnvoll nach dem Inhalt des Textes
+- Nutze Emojis sparsam (nur für wichtige Hinweise)
 - Korrigiere Rechtschreibfehler und Grammatikfehler
+
+## Inhalt:
+- Verwende AUSSCHLIESSLICH den bereitgestellten Text als Basis
+- Bei existierendem Inhalt: Erweitere/aktualisiere ihn nur mit neuen Informationen, vermeide Textänderungen aufgrund von Stil / Formulierung
+- Behalte alle wichtigen Informationen aus dem Originaltext bei
 `;
 
 /**
@@ -344,18 +350,22 @@ class ContentProcessor {
         : '';
 
       const existingContentInfo = existingContent 
-        ? `\n\nAktueller Inhalt der Datei:\n\`\`\`\n${existingContent}\n\`\`\``
-        : '';
+        ? `\n\n## Aktueller Inhalt der Seite (DIES ist der bestehende Inhalt zum Erweitern/Aktualisieren):\n\`\`\`markdown\n${existingContent}\n\`\`\``
+        : `\n\n## Aktueller Inhalt der Seite (Hinweis: Dies ist eine NEUE Seite ohne existierenden Inhalt)\n\n`;
 
       const fullPrompt = `${this.systemPrompt}
 ${contextBlock}
 ${existingContentInfo}
 
-Neuer/Zusätzlicher Inhalt:
+## Beschreibender Inhalt (DIES ist der Hauptinhalt, den du verarbeiten und als Redakteur nutzen sollst um den aktuellen Inhalt zu erweitern/aktualisieren):
 \`\`\`
 ${rawContent}
 \`\`\`
-${imageList}`;
+${imageList}
+
+## ERINNERUNG:
+Gib NUR den fertigen Markdown-Inhalt aus. Der Inhalt handelt von dem Thema im obigen Text - NICHT von diesem Synchronisations-Tool oder irgendeinem Plugin.
+Beginne direkt mit dem YAML Frontmatter (---) ohne weitere Einleitung.`;
 
       Logger.debug(`Prompt-Länge: ${this.systemPrompt.length} Zeichen`);
       Logger.debug(`Context-Dokumente: ${contextDocuments.length}`);
