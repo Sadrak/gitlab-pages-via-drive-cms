@@ -1106,7 +1106,7 @@ Timestamp: ${new Date(timestamp).toISOString()}`;
 
       if (!hasChanges) {
         Logger.info('Keine Git-Änderungen zum Pushen');
-        await this.gitService.returnToMain();
+        await this.gitService.returnToBranch(this.baseBranch);
         return;
       }
 
