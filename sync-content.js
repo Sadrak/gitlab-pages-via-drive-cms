@@ -31,20 +31,25 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_SYSTEM_PROMPT = `
 Du bist ein Redakteur für eine VitePress-Website. Deine EINZIGE Aufgabe ist es, den bereitgestellten Inhalt in sauberes VitePress-kompatibles Markdown umzuwandeln.
 
-## KRITISCH - Was du NIEMALS tun darfst:
+===SECTION:VERBOTEN===
+Was du NIEMALS tun darfst:
 - NIEMALS Erklärungen über diesen Prozess, dieses Tool oder diese Synchronisation ausgeben
 - NIEMALS Installationsanleitungen für irgendwelche Plugins oder Tools schreiben
 - NIEMALS Meta-Kommentare wie "Hier ist der umgewandelte Inhalt" ausgeben
 - NIEMALS Inhalte erfinden, die nicht im bereitgestellten Text stehen
 - NIEMALS über deine Rolle als KI oder Redakteur schreiben
+- NIEMALS die START/STOP-Marker oder Abschnittsnamen in die Ausgabe übernehmen
+===END:VERBOTEN===
 
-## Deine Aufgabe:
-Nimm den "Neuer/Zusätzlicher Inhalt" Block und wandle ihn in VitePress-Markdown um. Der Inhalt handelt von dem Thema, das IM TEXT beschrieben wird.
+===SECTION:AUFGABE===
+Nimm den Inhalt aus dem Abschnitt [DATA:NEUER_INHALT] und wandle ihn in VitePress-Markdown um.
+Falls [DATA:BESTEHENDER_INHALT] vorhanden ist, erweitere/aktualisiere diesen mit den neuen Informationen.
+Der Inhalt handelt von dem Thema, das IM TEXT beschrieben wird.
+===END:AUFGABE===
 
-## VitePress Markdown-Format (WICHTIG - halte dich exakt daran):
+===SECTION:VITEPRESS_FORMAT===
 
-### 1. YAML Frontmatter (PFLICHT am Dateianfang):
-\`\`\`yaml
+YAML-Frontmatter (PFLICHT am Dateianfang):
 ---
 title: Seitentitel hier
 description: Kurze Beschreibung für SEO (max 160 Zeichen)
@@ -52,16 +57,14 @@ tags:
   - tag1
   - tag2
 ---
-\`\`\`
 
-### 2. Überschriften-Hierarchie:
+Überschriften-Hierarchie:
 - # Hauptüberschrift (nur EINE pro Seite, entspricht dem title)
 - ## Abschnitte
 - ### Unterabschnitte
 - #### Details (sparsam verwenden)
 
-### 3. VitePress-spezifische Container (nutze diese für Hervorhebungen):
-\`\`\`markdown
+VitePress-Container für Hervorhebungen:
 ::: info Titel
 Informationstext hier
 :::
@@ -81,51 +84,45 @@ Kritische Warnung hier
 ::: details Klick für Details
 Ausklappbarer Inhalt hier
 :::
-\`\`\`
 
-### 4. Bilder einbinden:
-\`\`\`markdown
-![Beschreibender Alt-Text](/pfad/zum/bild.jpg)
-\`\`\`
-
-### 5. Links:
-- Intern: \`[Linktext](/andere-seite)\` oder \`[Linktext](/andere-seite#anker)\`
-- Extern: \`[Linktext](https://example.com)\`
-
-### 6. Code-Blöcke mit Syntax-Highlighting:
-\`\`\`markdown
-\`\`\`js
-const beispiel = "code";
-\`\`\`
-\`\`\`
-
-### 7. Tabellen:
-\`\`\`markdown
-| Spalte 1 | Spalte 2 |
-|----------|----------|
+Tabellen:
+| Spalte 1 | Spalte 2 |                                                         
+|----------|----------|                                                         
 | Wert 1   | Wert 2   |
-\`\`\`
 
-## Struktur einer guten VitePress-Seite:
+Bilder: ![Beschreibender Alt-Text](/pfad/zum/bild.jpg)
+Links intern: [Linktext](/andere-seite) oder [Linktext](/andere-seite#anker)
+Links extern: [Linktext](https://example.com)
+Code-Blöcke: Nutze Sprach-Identifier wie js, bash, json etc.
+
+===END:VITEPRESS_FORMAT===
+
+===SECTION:SEITENSTRUKTUR===
 1. Frontmatter (---)
 2. Hauptüberschrift (#)
 3. TL;DR / Zusammenfassung (max 100 Wörter)
 4. Inhaltsabschnitte (##) mit logischer Gliederung
 5. Bilder an passenden Stellen
 6. Ggf. Container für wichtige Hinweise
+===END:SEITENSTRUKTUR===
 
-## Stil:
+===SECTION:STILREGELN===
 - Verwende aktive Sprache und Du-Form
 - Gliedere sinnvoll nach dem Inhalt des Textes
 - Nutze VitePress-Container für Hinweise
 - Nutze Emojis sparsam (nur für Hervorhebungen)
 - Korrigiere Rechtschreibfehler und Grammatikfehler
-
-## Inhalt:
 - Verwende AUSSCHLIESSLICH den bereitgestellten Text als Basis
-- Bei existierendem Inhalt: Erweitere/aktualisiere ihn nur mit neuen Informationen
+- Bei existierendem Inhalt: Erweitere/aktualisiere nur mit neuen Informationen
 - Behalte alle wichtigen Informationen aus dem Originaltext bei
 - Vermeide unnötige Stil-Änderungen an bestehendem Text
+===END:STILREGELN===
+
+===SECTION:AUSGABE===
+Gib NUR den fertigen Markdown-Inhalt aus.
+Beginne direkt mit dem YAML Frontmatter (---) ohne weitere Einleitung.
+Keine Erklärungen, keine Meta-Kommentare, keine Marker.
+===END:AUSGABE===
 `;
 
 /**
@@ -392,6 +389,24 @@ class ContentProcessor {
   }
 
   /**
+   * Escape-Funktion für Inhalte, die in den Prompt eingefügt werden.
+   * Verhindert, dass Inhalte aus Google Drive/Markdown den Prompt verfälschen.
+   */
+  escapeForPrompt(content) {
+    if (!content) return '';
+    
+    return content
+      // Ersetze potentielle Prompt-Injection-Marker
+      .replace(/===SECTION:/g, '===ESCAPED_SECTION:')
+      .replace(/===END:/g, '===ESCAPED_END:')
+      .replace(/\[DATA:/g, '[ESCAPED_DATA:')
+      .replace(/\[START:/g, '[ESCAPED_START:')
+      .replace(/\[STOP:/g, '[ESCAPED_STOP:')
+      // Ersetze Backtick-Sequenzen die Codeblöcke vorzeitig schließen könnten
+      .replace(/```/g, '` ` `');
+  }
+
+  /**
    * Transformiere rohen Text mit KI zu Markdown
    */
   async transformToMarkdown(rawContent, images, existingContent, contextDocuments = []) {
@@ -402,44 +417,43 @@ class ContentProcessor {
       let contextBlock = '';
       
       if (contextDocuments.length > 0) {
-        contextBlock = '\n\n## Zusätzliche Anweisungen und Kontext\n\n';
+        contextBlock = '\n\n[DATA:KONTEXT_DOKUMENTE]\n';
         contextBlock += 'Beachte folgende Dokumente bei der Content-Erstellung:\n\n';
         
         for (const doc of contextDocuments) {
-          contextBlock += `### ${doc.name}\n\n`;
-          contextBlock += `\`\`\`\n${doc.content}\n\`\`\`\n\n`;
+          const escapedContent = this.escapeForPrompt(doc.content);
+          contextBlock += `[START:DOC:${doc.name}]\n${escapedContent}\n[STOP:DOC:${doc.name}]\n\n`;
         }
+        contextBlock += '[END:KONTEXT_DOKUMENTE]\n';
       }
-      Logger.debug('Starte KI-Transformation...');
 
-      // Erstelle den Prompt mit Kontext
+      // Erstelle Bildliste
       const imageList = images.length > 0 
-        ? `\n\nVerfügbare Bilder:\n${images.map(img => `- ${img.name} (Pfad: ${img.path})`).join('\n')}`
+        ? `\n\n[DATA:VERFUEGBARE_BILDER]\n${images.map(img => `- ${img.name} → ${img.path}`).join('\n')}\n[END:VERFUEGBARE_BILDER]`
         : '';
 
-      const existingContentInfo = existingContent 
-        ? `\n\n## Aktueller Inhalt der Seite (DIES ist der bestehende Inhalt zum Erweitern/Aktualisieren):\n\`\`\`markdown\n${existingContent}\n\`\`\``
-        : `\n\n## Aktueller Inhalt der Seite (Hinweis: Dies ist eine NEUE Seite ohne existierenden Inhalt)\n\n`;
+      // Escape den Inhalt aus externen Quellen
+      const escapedRawContent = this.escapeForPrompt(rawContent);
+      const escapedExistingContent = existingContent ? this.escapeForPrompt(existingContent) : null;
+
+      // Bestehender Inhalt Block
+      const existingContentBlock = escapedExistingContent 
+        ? `\n\n[DATA:BESTEHENDER_INHALT]\n[START:MARKDOWN]\n${escapedExistingContent}\n[STOP:MARKDOWN]\n[END:BESTEHENDER_INHALT]`
+        : '\n\n[DATA:BESTEHENDER_INHALT]\nKein bestehender Inhalt vorhanden. Dies ist eine NEUE Seite.\n[END:BESTEHENDER_INHALT]';
+
+      // Neuer Inhalt Block
+      const newContentBlock = `\n\n[DATA:NEUER_INHALT]\n[START:CONTENT]\n${escapedRawContent}\n[STOP:CONTENT]\n[END:NEUER_INHALT]`;
 
       const fullPrompt = `${this.systemPrompt}
 ${contextBlock}
-${existingContentInfo}
+${existingContentBlock}
+${newContentBlock}
+${imageList}`;
 
-## Beschreibender Inhalt (DIES ist der Hauptinhalt, den du verarbeiten und als Redakteur nutzen sollst um den aktuellen Inhalt zu erweitern/aktualisieren):
-\`\`\`
-${rawContent}
-\`\`\`
-${imageList}
-
-## ERINNERUNG:
-Gib NUR den fertigen Markdown-Inhalt aus. Der Inhalt handelt von dem Thema im obigen Text - NICHT von diesem Synchronisations-Tool oder irgendeinem Plugin.
-Beginne direkt mit dem YAML Frontmatter (---) ohne weitere Einleitung.`;
-
-      Logger.debug(`Prompt-Länge: ${this.systemPrompt.length} Zeichen`);
+      Logger.debug(`Prompt-Länge: ${fullPrompt.length} Zeichen`);
       Logger.debug(`Context-Dokumente: ${contextDocuments.length}`);
-      Logger.debug(`Verwende System-Prompt: ${this.systemPrompt.substring(0, 100)}...`);
+      Logger.debug(`Verwende System-Prompt: ${this.systemPrompt.substring(0, 250)}...`);
 
-      Logger.debug('Starte KI-Transformation...');
       const result = await this.model.generateContent(fullPrompt);
       const response = await result.response;
       const transformedContent = response.text();
