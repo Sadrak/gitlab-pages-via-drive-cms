@@ -5,8 +5,10 @@
   "type": "module",
   "main": "sync-content.js",
   "scripts": {
-    "sync": "node sync-content.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bin": {
+    "sync-content": "./sync-content.js"
   },
   "keywords": [
     "vitepress",
