@@ -470,8 +470,11 @@ ${imageList}`;
    * Erstelle Metadaten-Block für die Markdown-Datei
    */
   createMetadataComment(files, timestamp) {
-    const fileList = files.map(f => `${f.name} (${f.id})`).join(', ');
-    return `<!-- 
+    const fileList = [...files]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(f => `${f.name} (${f.id})`)
+          .join(', ');
+    return `<!--
 SYNC_METADATA:
 last_sync: ${timestamp.toISOString()}
 source_files: ${fileList}
