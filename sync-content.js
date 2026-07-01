@@ -2,7 +2,7 @@
 
 /**
  * Google Drive zu VitePress Content Synchronisation
- * 
+ *
  * Dieses Skript synchronisiert Inhalte aus Google Drive mit einem VitePress Repository.
  * Es prüft auf Änderungen, lädt neue Inhalte herunter, transformiert sie mit KI
  * und erstellt automatisch Merge Requests in GitLab.
@@ -86,8 +86,8 @@ Ausklappbarer Inhalt hier
 :::
 
 Tabellen:
-| Spalte 1 | Spalte 2 |                                                         
-|----------|----------|                                                         
+| Spalte 1 | Spalte 2 |
+|----------|----------|
 | Wert 1   | Wert 2   |
 
 Bilder: ![Beschreibender Alt-Text](/pfad/zum/bild.jpg)
@@ -134,31 +134,31 @@ function detectGitApiUrl() {
   if (process.env.GIT_API_URL) return process.env.GIT_API_URL;
   if (process.env.GITLAB_API_URL) return process.env.GITLAB_API_URL;
   if (process.env.CI_API_V4_URL) return process.env.CI_API_V4_URL;
-  
+
   // GitHub Actions Umgebung
   if (process.env.GITHUB_API_URL) {
     return process.env.GITHUB_API_URL; // Standard: https://api.github.com
   }
-  
+
   // Erkenne anhand CI-spezifischer Variablen
   if (process.env.GITHUB_ACTIONS === 'true') {
     return 'https://api.github.com';
   }
-  
+
   if (process.env.GITLAB_CI === 'true' || process.env.CI_SERVER_URL) {
     const serverUrl = process.env.CI_SERVER_URL || 'https://gitlab.com';
     return `${serverUrl}/api/v4`;
   }
-  
+
   // Versuche aus Git Remote URL zu erkennen (sync, keine async hier)
   try {
     const { execSync } = require('child_process');
-    const remoteUrl = execSync('git config --get remote.origin.url', { 
+    const remoteUrl = execSync('git config --get remote.origin.url', {
       encoding: 'utf8',
       cwd: process.env.REPO_PATH || process.env.CI_PROJECT_DIR || process.cwd(),
       stdio: ['pipe', 'pipe', 'ignore']
     }).trim();
-    
+
     if (remoteUrl.includes('github.com')) {
       return 'https://api.github.com';
     } else if (remoteUrl.includes('gitlab.com')) {
@@ -173,7 +173,7 @@ function detectGitApiUrl() {
   } catch (e) {
     // Ignoriere Fehler, nutze Fallback
   }
-  
+
   // Fallback zu GitLab
   return 'https://gitlab.com/api/v4';
 }
@@ -181,7 +181,7 @@ function detectGitApiUrl() {
 const CONFIG = {
   driveFolderId: process.env.DRIVE_FOLDER_ID,
   googleApiKey: process.env.GOOGLE_API_KEY,
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-pro-preview',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
   geminiSystemPrompt: process.env.GEMINI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
   // Git-Provider Token (funktioniert mit GitLab und GitHub)
   // GitHub Actions: GITHUB_TOKEN (automatisch gesetzt)
@@ -247,7 +247,7 @@ class DriveService {
   async listFolders(parentFolderId) {
     try {
       Logger.debug(`Liste Ordner in: ${parentFolderId}`);
-      
+
       const response = await this.drive.files.list({
         q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
         fields: 'files(id, name, modifiedTime)',
@@ -267,7 +267,7 @@ class DriveService {
   async listFiles(folderId) {
     try {
       Logger.debug(`Liste Dateien in Ordner: ${folderId}`);
-      
+
       const response = await this.drive.files.list({
         q: `'${folderId}' in parents and trashed=false`,
         fields: 'files(id, name, mimeType, modifiedTime)',
@@ -287,7 +287,7 @@ class DriveService {
   async downloadDocContent(fileId) {
     try {
       Logger.debug(`Lade Google Doc: ${fileId}`);
-      
+
       const response = await this.drive.files.export({
         fileId: fileId,
         mimeType: 'text/plain'
@@ -306,7 +306,7 @@ class DriveService {
   async downloadSheetContent(fileId) {
     try {
       Logger.debug(`Lade Google Sheet: ${fileId}`);
-      
+
       const response = await this.drive.files.export({
         fileId: fileId,
         mimeType: 'text/csv'
@@ -325,7 +325,7 @@ class DriveService {
   async downloadImage(fileId) {
     try {
       Logger.debug(`Lade Bild: ${fileId}`);
-      
+
       const response = await this.drive.files.get({
         fileId: fileId,
         alt: 'media'
@@ -344,7 +344,7 @@ class DriveService {
   async getLatestModifiedTime(folderId) {
     try {
       const files = await this.listFiles(folderId);
-      
+
       if (files.length === 0) {
         return null;
       }
@@ -371,7 +371,7 @@ class DriveService {
 class ContentProcessor {
   constructor(googleApiKey, geminiModelName, geminiSystemPrompt) {
     this.genAI = new GoogleGenerativeAI(googleApiKey);
-    
+
     const modelConfig = {
       model: geminiModelName,
       generationConfig: {
@@ -381,10 +381,10 @@ class ContentProcessor {
         maxOutputTokens: 16384,
       }
     };
-    
+
     this.model = this.genAI.getGenerativeModel(modelConfig);
     this.systemPrompt = geminiSystemPrompt;
-    
+
     Logger.debug(`ContentProcessor initialisiert mit Modell: ${geminiModelName}`);
   }
 
@@ -394,7 +394,7 @@ class ContentProcessor {
    */
   escapeForPrompt(content) {
     if (!content) return '';
-    
+
     return content
       // Ersetze potentielle Prompt-Injection-Marker
       .replace(/===SECTION:/g, '===ESCAPED_SECTION:')
@@ -415,11 +415,11 @@ class ContentProcessor {
 
       // Erstelle Context-Block aus geladenen Dokumenten
       let contextBlock = '';
-      
+
       if (contextDocuments.length > 0) {
         contextBlock = '\n\n[DATA:KONTEXT_DOKUMENTE]\n';
         contextBlock += 'Beachte folgende Dokumente bei der Content-Erstellung:\n\n';
-        
+
         for (const doc of contextDocuments) {
           const escapedContent = this.escapeForPrompt(doc.content);
           contextBlock += `[START:DOC:${doc.name}]\n${escapedContent}\n[STOP:DOC:${doc.name}]\n\n`;
@@ -428,7 +428,7 @@ class ContentProcessor {
       }
 
       // Erstelle Bildliste
-      const imageList = images.length > 0 
+      const imageList = images.length > 0
         ? `\n\n[DATA:VERFUEGBARE_BILDER]\n${images.map(img => `- ${img.name} → ${img.path}`).join('\n')}\n[END:VERFUEGBARE_BILDER]`
         : '';
 
@@ -437,7 +437,7 @@ class ContentProcessor {
       const escapedExistingContent = existingContent ? this.escapeForPrompt(existingContent) : null;
 
       // Bestehender Inhalt Block
-      const existingContentBlock = escapedExistingContent 
+      const existingContentBlock = escapedExistingContent
         ? `\n\n[DATA:BESTEHENDER_INHALT]\n[START:MARKDOWN]\n${escapedExistingContent}\n[STOP:MARKDOWN]\n[END:BESTEHENDER_INHALT]`
         : '\n\n[DATA:BESTEHENDER_INHALT]\nKein bestehender Inhalt vorhanden. Dies ist eine NEUE Seite.\n[END:BESTEHENDER_INHALT]';
 
@@ -521,14 +521,14 @@ class GitService {
       const authString = Buffer.from(`oauth2:${gitAccessToken}`).toString('base64');
       gitConfig.push(`http.extraHeader=Authorization: Basic ${authString}`);
     }
-    
+
     this.git = simpleGit(repoPath, {
       config: gitConfig,
     });
-    
+
     Logger.debug(`GitService initialisiert${gitAccessToken ? ' (mit Token-Auth)' : ''} (User: ${userName} <${userEmail}>)`);
   }
-  
+
   /**
    * Erstelle einen dedizierten HTTPS Remote für Token-Auth
    * Lässt origin unverändert und erstellt sync-origin mit HTTPS URL (OHNE Token)
@@ -539,18 +539,18 @@ class GitService {
       if (!this.gitAccessToken) {
         return; // Kein Token = nutze origin direkt
       }
-      
+
       const remotes = await this.git.getRemotes(true);
       const origin = remotes.find(r => r.name === 'origin');
-      
+
       if (!origin) {
         Logger.error('Kein "origin" Remote gefunden');
         return;
       }
-      
+
       let url = origin.refs.fetch;
       let httpsUrl = url;
-      
+
       // Konvertiere SSH zu HTTPS falls nötig (OHNE Token in URL)
       if (url.startsWith('git@')) {
         const match = url.match(/^git@([^:]+):(.+)$/);
@@ -567,10 +567,10 @@ class GitService {
           httpsUrl = `https://${match[1]}`;
         }
       }
-      
+
       // Prüfe ob sync-origin bereits existiert
       const syncOrigin = remotes.find(r => r.name === 'sync-origin');
-      
+
       if (syncOrigin) {
         // Aktualisiere URL falls sie sich geändert hat
         await this.git.remote(['set-url', 'sync-origin', httpsUrl]);
@@ -580,10 +580,10 @@ class GitService {
         await this.git.addRemote('sync-origin', httpsUrl);
         Logger.debug('sync-origin Remote erstellt (Token wird via Env genutzt)');
       }
-      
+
       // Nutze sync-origin für alle Operationen
       this.remoteName = 'sync-origin';
-      
+
     } catch (error) {
       Logger.error('Fehler beim Erstellen des sync-origin Remote:', error.message);
       // Fallback zu origin
@@ -611,16 +611,16 @@ class GitService {
     try {
       const currentBranch = await this.getCurrentBranch();
       Logger.debug(`Erstelle Branch: ${branchName} (Basis: ${currentBranch})`);
-      
+
       // Erstelle/aktualisiere sync-origin Remote für Token-Auth
       await this.ensureSyncRemote();
-      
+
       // Hole aktuelle Änderungen vom aktuellen Branch
       await this.git.pull(this.remoteName, currentBranch);
-      
+
       // Erstelle neuen Branch vom aktuellen Branch aus
       await this.git.checkoutLocalBranch(branchName);
-      
+
       Logger.success(`Branch ${branchName} erstellt von ${currentBranch}`);
       return currentBranch; // Gebe Basis-Branch zurück für spätere Verwendung
     } catch (error) {
@@ -636,9 +636,9 @@ class GitService {
     try {
       Logger.debug(`Füge Änderungen in ${contentPath}/ hinzu...`);
       await this.git.add(contentPath);
-      
+
       const status = await this.git.status();
-      
+
       // Prüfe ob es staged Änderungen gibt
       if (status.staged.length === 0) {
         Logger.info('Keine Änderungen zum Committen');
@@ -647,7 +647,7 @@ class GitService {
 
       Logger.debug(`Committe ${status.staged.length} Dateien aus ${contentPath}/...`);
       await this.git.commit(message);
-      
+
       Logger.success('Änderungen committed');
       return true;
     } catch (error) {
@@ -662,7 +662,7 @@ class GitService {
   async pushBranch(branchName) {
     try {
       Logger.debug(`Pushe Branch: ${branchName} (Remote: ${this.remoteName})`);
-      
+
       await this.git.push(this.remoteName, branchName, ['--set-upstream']);
       Logger.success(`Branch ${branchName} gepusht`);
       return true;
@@ -695,17 +695,17 @@ class GitProviderService {
     this.apiUrl = apiUrl;
     this.token = token;
     this.projectId = projectId;
-    
+
     // Erkenne Provider anhand der API URL
     this.isGitHub = apiUrl.includes('github.com') || apiUrl.includes('api.github.com');
     this.providerName = this.isGitHub ? 'GitHub' : 'GitLab';
-    
+
     Logger.debug(`GitProviderService initialisiert (${this.providerName})`);
     // Verwende passenden Auth-Header für Provider
-    const headers = this.isGitHub 
+    const headers = this.isGitHub
       ? { 'Authorization': `token ${token}` }
       : { 'PRIVATE-TOKEN': token };
-    
+
     this.client = axios.create({
       baseURL: apiUrl,
       headers: headers
@@ -763,53 +763,53 @@ class ContentSynchronizer {
   async loadContextDocuments() {
     try {
       Logger.info('\n--- Lade Context-Dokumente aus Stammverzeichnis ---');
-      
+
       // Hole alle Dateien (keine Ordner) aus dem Stammverzeichnis
       const allFiles = await this.driveService.listFiles(this.config.driveFolderId);
-      
+
       // Filtere nur Docs und Sheets (keine Bilder, keine Ordner)
-      const contextFiles = allFiles.filter(file => 
+      const contextFiles = allFiles.filter(file =>
         file.mimeType === 'application/vnd.google-apps.document' ||
         file.mimeType === 'application/vnd.google-apps.spreadsheet'
       );
-      
+
       if (contextFiles.length === 0) {
         Logger.info('Keine Context-Dokumente im Stammverzeichnis gefunden');
         Logger.info('Hinweis: Legen Sie Dateien wie "Glossar", "Satzung" oder "Wiki" im Hauptordner ab,');
         Logger.info('         um sie als zusätzlichen Kontext für die KI zu nutzen.');
         return [];
       }
-      
+
       Logger.info(`${contextFiles.length} Context-Datei(en) gefunden:`);
       const loadedDocs = [];
-      
+
       for (const file of contextFiles) {
         try {
           Logger.info(`  Lade "${file.name}"...`);
-          
+
           let content = '';
           if (file.mimeType === 'application/vnd.google-apps.document') {
             content = await this.driveService.downloadDocContent(file.id);
           } else if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
             content = await this.driveService.downloadSheetContent(file.id);
           }
-          
+
           loadedDocs.push({
             name: file.name,
             content: content,
             type: file.mimeType
           });
-          
+
           Logger.success(`  ✓ "${file.name}" geladen (${content.length} Zeichen)`);
         } catch (error) {
           Logger.error(`  ✗ Fehler beim Laden von "${file.name}":`, error.message);
         }
       }
-      
+
       if (loadedDocs.length > 0) {
         Logger.success(`📚 ${loadedDocs.length} Context-Dokument(e) erfolgreich geladen und werden in allen Prompts verwendet`);
       }
-      
+
       return loadedDocs;
     } catch (error) {
       Logger.error('Fehler beim Laden der Context-Dokumente:', error.message);
@@ -823,14 +823,14 @@ class ContentSynchronizer {
   async hasExistingChanges() {
     try {
       const status = await this.gitService.git.status();
-      
+
       // Filtere nur Änderungen im contentPath
       const contentChanges = status.files.filter(file => {
         return file.path.startsWith(this.config.contentPath + '/');
       });
-      
+
       const hasChanges = contentChanges.length > 0;
-      
+
       if (hasChanges) {
         Logger.info(`📝 Erkannte bereits vorhandene Änderungen in ${this.config.contentPath}/:`)
         contentChanges.slice(0, 5).forEach(file => {
@@ -840,7 +840,7 @@ class ContentSynchronizer {
           Logger.info(`   ... und ${contentChanges.length - 5} weitere Datei(en)`);
         }
       }
-      
+
       return hasChanges;
     } catch (error) {
       Logger.debug('Fehler beim Prüfen des Git-Status:', error.message);
@@ -862,7 +862,7 @@ class ContentSynchronizer {
 
       // Prüfe ob bereits Änderungen vorliegen (z.B. von früherem Lauf)
       const hasExistingChanges = await this.hasExistingChanges();
-      
+
       if (hasExistingChanges) {
         Logger.info('\n⚡ SKIP-Modus aktiviert: Überspringe Drive/KI-Verarbeitung');
         Logger.info('   Grund: Es liegen bereits Änderungen im Working Directory vor');
@@ -872,7 +872,7 @@ class ContentSynchronizer {
       } else {
         // Normale Verarbeitung: Drive → KI → Dateien schreiben
         Logger.info('\n📥 Starte normale Verarbeitung (Drive → KI → Git)\n');
-        
+
         // Lade Context-Dokumente aus dem Stammverzeichnis (einmalig für alle Ordner)
         this.contextDocuments = await this.loadContextDocuments();
 
@@ -900,7 +900,7 @@ class ContentSynchronizer {
 
     } catch (error) {
       Logger.error('Fehler bei der Synchronisation:', error.message);
-      
+
       // Versuche zum Basis-Branch zurückzukehren (falls gesetzt)
       try {
         if (this.baseBranch) {
@@ -909,7 +909,7 @@ class ContentSynchronizer {
       } catch (e) {
         // Ignoriere Fehler beim Zurückkehren
       }
-      
+
       throw error;
     }
   }
@@ -924,7 +924,7 @@ class ContentSynchronizer {
       gitAccessToken: 'GIT_ACCESS_TOKEN, GITLAB_TOKEN, GITHUB_TOKEN oder CI_JOB_TOKEN',
       gitProjectId: 'GIT_PROJECT_ID, GITLAB_PROJECT_ID oder CI_PROJECT_ID'
     };
-    
+
     const missing = Object.keys(required).filter(key => !this.config[key]);
 
     if (missing.length > 0) {
@@ -1039,7 +1039,7 @@ class ContentSynchronizer {
       // Vergleiche Zeitstempel aus Metadaten mit Drive
       const lastSync = localMetadata.lastSync;
       Logger.debug(`Letzter Sync: ${lastSync.toISOString()}, Drive: ${driveModifiedTime.toISOString()}`);
-      
+
       return driveModifiedTime > lastSync;
 
     } catch (error) {
@@ -1065,29 +1065,29 @@ class ContentSynchronizer {
           const content = await this.driveService.downloadDocContent(file.id);
           textContent += `\n\n## ${file.name}\n\n${content}`;
         }
-        
+
         // Google Sheets
         else if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
           const content = await this.driveService.downloadSheetContent(file.id);
           textContent += `\n\n## ${file.name}\n\n\`\`\`csv\n${content}\n\`\`\``;
         }
-        
+
         // Bilder
         else if (file.mimeType.startsWith('image/')) {
           const imageBuffer = await this.driveService.downloadImage(file.id);
           const ext = this.getImageExtensionIfNeeded(file.name, file.mimeType);
           const imageName = this.sanitizeFileName(file.name);
           const imagePath = path.join(assetsDir, `${imageName}${ext}`);
-          
+
           await fs.writeFile(imagePath, imageBuffer);
-          
+
           // Pfad vom Markdown (docs/{fileSlug}.md) zum Bild (/assets/{fileSlug}/)
           const relativeImagePath = `/assets/${fileSlug}/${imageName}${ext}`;
           images.push({
             name: file.name,
             path: relativeImagePath
           });
-          
+
           Logger.debug(`    Bild gespeichert: ${imagePath}`);
         }
 
@@ -1199,10 +1199,10 @@ ${this.processedFolders.map(f => `- ${f}`).join('\n')}
    * Vermeidet doppelte Endungen wie "Felix.jpg.jpg"
    */
   getImageExtensionIfNeeded(fileName, mimeType) {
-    
+
     // Liste aller bekannten Bild-Endungen
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
-    
+
     // Prüfe ob der Dateiname bereits mit einer Bild-Endung endet
     const lowerFileName = fileName.toLowerCase();
     for (const ext of imageExtensions) {
@@ -1211,7 +1211,7 @@ ${this.processedFolders.map(f => `- ${f}`).join('\n')}
         return '';
       }
     }
-    
+
     // Keine bekannte Endung gefunden - füge die passende hinzu
     return this.getImageExtension(mimeType);;
   }
